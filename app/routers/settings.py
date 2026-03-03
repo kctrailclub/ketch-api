@@ -6,7 +6,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.dependencies import get_current_admin
+from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_raw_email
 from app.models.models import Hour, User, Household
 from sqlalchemy import func
@@ -58,6 +58,15 @@ class SendRewardsRequest(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
+@router.get("/rewards/threshold")
+def get_reward_threshold(
+    db: Session = Depends(get_db),
+    _user: User = Depends(get_current_user),
+):
+    threshold = int(get_setting(db, "reward_threshold") or 10)
+    return {"threshold": threshold}
+
 
 @router.get("/rewards")
 def get_reward_settings(
