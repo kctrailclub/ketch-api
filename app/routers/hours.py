@@ -109,14 +109,15 @@ def list_hours(
     member_id: Optional[int] = None,
     year: Optional[int] = None,
     status_filter: Optional[str] = None,
+    household_scope: Optional[bool] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
     q = db.query(Hour)
 
-    # Non-admins see hours for all members of their household
-    # unless they filter by their own member_id (e.g. dashboard)
-    if not current_user.is_admin:
+    # Non-admins (or admins viewing "My Hours" with household_scope=true)
+    # see hours for all members of their household
+    if not current_user.is_admin or household_scope:
         if member_id and member_id == current_user.user_id:
             q = q.filter(Hour.member_id == current_user.user_id)
         elif current_user.household_id:
