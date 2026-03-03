@@ -1,3 +1,5 @@
+import html
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import text
@@ -32,7 +34,7 @@ def set_setting(db: Session, key: str, value: str):
 
 def apply_template(template: str, replacements: dict) -> str:
     for k, v in replacements.items():
-        template = template.replace(f"{{{{{k}}}}}", str(v))
+        template = template.replace(f"{{{{{k}}}}}", html.escape(str(v)))
     return template
 
 

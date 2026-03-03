@@ -1,3 +1,4 @@
+import html as html_mod
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -19,9 +20,10 @@ def _send(to: str, subject: str, html: str) -> None:
 
 
 def send_invite_email(to: str, firstname: str, token: str) -> None:
+    safe_name = html_mod.escape(firstname)
     link = f"{settings.frontend_url}/set-password?token={token}"
     html = f"""
-    <p>Hi {firstname},</p>
+    <p>Hi {safe_name},</p>
     <p>An account has been created for you on <strong>{settings.app_name}</strong>.</p>
     <p>Click the link below to set your password and get started.
        This link expires in {settings.invite_token_expire_hours} hours.</p>
@@ -38,9 +40,10 @@ def send_raw_email(to: str, subject: str, body: str) -> None:
 
 
 def send_password_reset_email(to: str, firstname: str, token: str) -> None:
+    safe_name = html_mod.escape(firstname)
     link = f"{settings.frontend_url}/set-password?token={token}"
     html = f"""
-    <p>Hi {firstname},</p>
+    <p>Hi {safe_name},</p>
     <p>We received a request to reset your password for <strong>{settings.app_name}</strong>.</p>
     <p>Click the link below to set a new password.
        This link expires in {settings.invite_token_expire_hours} hours.</p>
