@@ -76,6 +76,8 @@ def submit_hours(
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
+    auto_approve = bool(current_user.is_admin)
+
     hour = Hour(
         member_id=payload.member_id,
         project_id=payload.project_id,
@@ -83,19 +85,23 @@ def submit_hours(
         service_date=payload.service_date,
         hours=payload.hours,
         notes=payload.notes,
-        status="pending",
+        status="approved" if auto_approve else "pending",
+        status_updated=datetime.now(timezone.utc) if auto_approve else None,
+        status_by=current_user.user_id if auto_approve else None,
     )
     db.add(hour)
     db.flush()  # get hour_id before commit
 
-    _notify_admins(
-        db,
-        f"{member.firstname} {member.lastname} submitted {payload.hours}h for {project.name}",
-        hour.hour_id,
-    )
+    if not auto_approve:
+        _notify_admins(
+            db,
+            f"{member.firstname} {member.lastname} submitted {payload.hours}h for {project.name}",
+            hour.hour_id,
+        )
 
     db.commit()
-    return {"hour_id": hour.hour_id, "detail": "Hours submitted and pending approval"}
+    detail = "Hours approved" if auto_approve else "Hours submitted and pending approval"
+    return {"hour_id": hour.hour_id, "detail": detail}
 
 
 @router.get("/")
