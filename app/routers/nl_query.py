@@ -200,8 +200,14 @@ def natural_language_query(
         raw_sql = _generate_sql(question)
     except HTTPException:
         raise
+    except anthropic.AuthenticationError as e:
+        raise HTTPException(status_code=502, detail=f"Anthropic API authentication failed: {str(e)}")
+    except anthropic.APIConnectionError as e:
+        raise HTTPException(status_code=502, detail=f"Cannot reach Anthropic API: {str(e)}")
+    except anthropic.APIStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Anthropic API error ({e.status_code}): {e.message}")
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to generate query: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Failed to generate query: {type(e).__name__}: {str(e)}")
 
     # Step 2 — Validate the generated SQL
     try:
