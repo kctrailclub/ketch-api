@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     app_name: str = "KCTC Volunteer Hours"
     frontend_url: str
 
+    # Anthropic (for natural language query)
+    anthropic_api_key: str | None = None
+
     class Config:
         env_file = ".env"
 
