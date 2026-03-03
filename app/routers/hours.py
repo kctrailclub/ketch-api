@@ -200,6 +200,26 @@ def review_hours(
     return {"detail": f"Hours {payload.status}"}
 
 
+@router.post("/approve-all")
+def approve_all_hours(
+    db: Session = Depends(get_db),
+    current_admin: User = Depends(get_current_admin),
+):
+    pending = db.query(Hour).filter(Hour.status == "pending").all()
+    if not pending:
+        raise HTTPException(status_code=400, detail="No pending hours to approve")
+
+    count = 0
+    for hour in pending:
+        hour.status = "approved"
+        hour.status_updated = datetime.now(timezone.utc)
+        hour.status_by = current_admin.user_id
+        count += 1
+
+    db.commit()
+    return {"detail": f"{count} hour record{'s' if count != 1 else ''} approved"}
+
+
 @router.delete("/{hour_id}")
 def delete_hours(
     hour_id: int,
