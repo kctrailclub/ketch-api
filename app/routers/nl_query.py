@@ -79,6 +79,7 @@ Rules:
 - Join hours to users via hours.member_id = users.user_id.
 - Join hours to projects via hours.project_id = projects.project_id.
 - Join users to households via users.household_id = households.household_id.
+- When filtering by project name, member name, or household name, use LIKE with wildcards (e.g. WHERE p.name LIKE '%keyword%') instead of exact matching, unless the user clearly provides the full exact name.
 - Always include a LIMIT clause (max 500 rows).
 - Return ONLY the raw SQL query, no explanation, no markdown fences, no extra text.
 """.strip()
