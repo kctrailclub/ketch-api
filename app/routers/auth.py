@@ -85,7 +85,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     db.commit()
 
     return TokenResponse(
-        access_token=create_access_token(user.user_id, bool(user.is_admin)),
+        access_token=create_access_token(user.user_id),
         refresh_token=create_refresh_token(user.user_id),
     )
 
@@ -108,7 +108,7 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
         )
 
     return TokenResponse(
-        access_token=create_access_token(user.user_id, bool(user.is_admin)),
+        access_token=create_access_token(user.user_id),
         refresh_token=create_refresh_token(user.user_id),
     )
 

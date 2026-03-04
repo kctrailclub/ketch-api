@@ -1,3 +1,5 @@
+import warnings
+
 from pydantic_settings import BaseSettings
 
 
@@ -39,5 +41,14 @@ _raw = Settings()
 # Strip stray whitespace / newlines from the API key (common copy-paste issue)
 if _raw.anthropic_api_key:
     _raw.anthropic_api_key = _raw.anthropic_api_key.strip()
+
+# Warn if SECRET_KEY looks weak (common dev defaults)
+_WEAK_MARKERS = {"secret", "changeme", "local", "dev", "test", "example", "placeholder"}
+if len(_raw.secret_key) < 32 or any(m in _raw.secret_key.lower() for m in _WEAK_MARKERS):
+    warnings.warn(
+        "SECRET_KEY appears weak — use a random string of 32+ characters in production "
+        "(e.g. python -c \"import secrets; print(secrets.token_urlsafe(64))\")",
+        stacklevel=1,
+    )
 
 settings = _raw
