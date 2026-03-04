@@ -127,7 +127,7 @@ def _generate_sql(question: str) -> str:
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     message = client.messages.create(
-        model="claude-3-haiku-20240307",
+        model="claude-3-5-haiku-20241022",
         max_tokens=1024,
         messages=[
             {
