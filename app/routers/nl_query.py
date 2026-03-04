@@ -127,7 +127,7 @@ def _generate_sql(question: str) -> str:
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
     message = client.messages.create(
-        model="claude-3-5-haiku-20241022",
+        model="claude-haiku-4-5",
         max_tokens=1024,
         messages=[
             {
@@ -191,7 +191,7 @@ def query_health_check(
     result = {
         "api_key_set": bool(settings.anthropic_api_key),
         "api_key_prefix": settings.anthropic_api_key[:12] + "..." if settings.anthropic_api_key else None,
-        "model": "claude-3-5-haiku-20241022",
+        "model": "claude-haiku-4-5",
     }
 
     if not settings.anthropic_api_key:
@@ -201,7 +201,7 @@ def query_health_check(
     try:
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         message = client.messages.create(
-            model="claude-3-5-haiku-20241022",
+            model="claude-haiku-4-5",
             max_tokens=10,
             messages=[{"role": "user", "content": "Reply with OK"}],
         )
