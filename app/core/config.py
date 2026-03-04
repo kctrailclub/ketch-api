@@ -14,13 +14,14 @@ class Settings(BaseSettings):
     # Invite tokens
     invite_token_expire_hours: int = 72
 
-    # Email
-    smtp_host: str
-    smtp_port: int = 587
-    smtp_user: str
-    smtp_password: str
-    email_from: str
+    # Email — Resend (preferred) or SMTP fallback
+    resend_api_key: str | None = None
+    email_from: str = "onboarding@resend.dev"
     email_from_name: str = "KCTC Volunteer Hours"
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_user: str | None = None
+    smtp_password: str | None = None
 
     # App
     app_name: str = "KCTC Volunteer Hours"

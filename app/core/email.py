@@ -1,5 +1,7 @@
 import html as html_mod
+import json
 import smtplib
+import urllib.request
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -7,6 +9,39 @@ from app.core.config import settings
 
 
 def _send(to: str, subject: str, html: str) -> None:
+    if settings.resend_api_key:
+        _send_resend(to, subject, html)
+    elif settings.smtp_host:
+        _send_smtp(to, subject, html)
+    else:
+        raise RuntimeError("No email provider configured (set RESEND_API_KEY or SMTP_HOST)")
+
+
+def _send_resend(to: str, subject: str, html: str) -> None:
+    payload = json.dumps({
+        "from": f"{settings.email_from_name} <{settings.email_from}>",
+        "to": [to],
+        "subject": subject,
+        "html": html,
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.resend.com/emails",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {settings.resend_api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req) as resp:
+        if resp.status not in (200, 201):
+            body = resp.read().decode()
+            raise RuntimeError(f"Resend API error {resp.status}: {body}")
+
+
+def _send_smtp(to: str, subject: str, html: str) -> None:
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = f"{settings.email_from_name} <{settings.email_from}>"
