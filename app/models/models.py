@@ -136,3 +136,48 @@ class AuditLog(Base):
     created      = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     user         = relationship("User", foreign_keys=[user_id])
+
+
+class ResourceSponsor(Base):
+    __tablename__ = "resource_sponsors"
+
+    sponsor_id = Column(Integer, primary_key=True, autoincrement=True)
+    name       = Column(String(100), nullable=False)
+    logo_url   = Column(String(500), nullable=False)
+    website_url = Column(String(500), nullable=False)
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_active  = Column(Integer, nullable=False, default=1)
+    created    = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated    = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ResourceUpdate(Base):
+    __tablename__ = "resource_updates"
+
+    update_id   = Column(Integer, primary_key=True, autoincrement=True)
+    title       = Column(String(200), nullable=False)
+    body        = Column(Text, nullable=False)
+    update_type = Column(Enum("trail", "event", "general"), nullable=False, default="general")
+    link_url    = Column(String(500), nullable=True)
+    expires_at  = Column(Date, nullable=True)
+    is_active   = Column(Integer, nullable=False, default=1)
+    sort_order  = Column(Integer, nullable=False, default=0)
+    created_by  = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created     = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated     = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    author      = relationship("User", foreign_keys=[created_by])
+
+
+class ResourceDocument(Base):
+    __tablename__ = "resource_documents"
+
+    document_id = Column(Integer, primary_key=True, autoincrement=True)
+    category    = Column(String(100), nullable=False)
+    title       = Column(String(200), nullable=False)
+    description = Column(String(500), nullable=True)
+    url         = Column(String(500), nullable=False)
+    sort_order  = Column(Integer, nullable=False, default=0)
+    is_active   = Column(Integer, nullable=False, default=1)
+    created     = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated     = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
