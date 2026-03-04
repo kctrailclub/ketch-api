@@ -33,4 +33,10 @@ class Settings(BaseSettings):
         env_file = ".env"
 
 
-settings = Settings()
+_raw = Settings()
+
+# Strip stray whitespace / newlines from the API key (common copy-paste issue)
+if _raw.anthropic_api_key:
+    _raw.anthropic_api_key = _raw.anthropic_api_key.strip()
+
+settings = _raw
