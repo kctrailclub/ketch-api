@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin
 from app.core.email import send_invite_email
+from app.core.audit import log_action
 from app.models.models import RegistrationRequest, User
 
 router = APIRouter(prefix="/registrations", tags=["registrations"])
@@ -137,6 +138,8 @@ def approve_registration(
     reg.status      = "approved"
     reg.reviewed_by = admin.user_id
     reg.reviewed_at = datetime.utcnow()
+    log_action(db, user_id=admin.user_id, action="approve", entity_type="registration", entity_id=request_id,
+        details={"summary": f"Approved registration for {reg.firstname} {reg.lastname} ({reg.email})"})
     db.commit()
     db.refresh(user)
 
@@ -165,5 +168,7 @@ def reject_registration(
     reg.status      = "rejected"
     reg.reviewed_by = admin.user_id
     reg.reviewed_at = datetime.utcnow()
+    log_action(db, user_id=admin.user_id, action="reject", entity_type="registration", entity_id=request_id,
+        details={"summary": f"Rejected registration for {reg.firstname} {reg.lastname} ({reg.email})"})
     db.commit()
     return {"detail": "Registration request rejected"}

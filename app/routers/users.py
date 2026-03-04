@@ -10,6 +10,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_invite_email
+from app.core.audit import log_action
 from app.models.models import User
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -70,6 +71,9 @@ def create_user(
         invite_expires=expires,
     )
     db.add(user)
+    db.flush()
+    log_action(db, user_id=_admin.user_id, action="create", entity_type="user", entity_id=user.user_id,
+        details={"summary": f"Created user {payload.firstname} {payload.lastname} ({payload.email})"})
     db.commit()
     db.refresh(user)
 
@@ -151,6 +155,12 @@ def update_user(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    changes = {}
+    for field in ("firstname", "lastname", "email", "phone", "is_admin", "is_active", "youth", "household_id"):
+        new_val = getattr(payload, field)
+        if new_val is not None and str(new_val) != str(getattr(user, field)):
+            changes[field] = {"old": getattr(user, field), "new": new_val}
+
     if payload.firstname    is not None: user.firstname    = payload.firstname
     if payload.lastname     is not None: user.lastname     = payload.lastname
     if payload.email        is not None: user.email        = payload.email
@@ -168,6 +178,8 @@ def update_user(
         user.invite_expires = None
         user.is_active     = 1
 
+    log_action(db, user_id=_admin.user_id, action="update", entity_type="user", entity_id=user_id,
+        details={"summary": f"Updated user {user.firstname} {user.lastname}", "changes": changes})
     db.commit()
     return {"detail": "User updated"}
 
@@ -189,6 +201,8 @@ def resend_invite(
     user.invite_expires = datetime.now(timezone.utc) + timedelta(
         hours=settings.invite_token_expire_hours
     )
+    log_action(db, user_id=_admin.user_id, action="resend_invite", entity_type="user", entity_id=user_id,
+        details={"summary": f"Resent invite to {user.firstname} {user.lastname} ({user.email})"})
     db.commit()
 
     try:

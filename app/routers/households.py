@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
+from app.core.audit import log_action
 from app.models.models import Household, Notification, User
 
 router = APIRouter(prefix="/households", tags=["households"])
@@ -65,6 +66,9 @@ def create_household(
         address=payload.address,
     )
     db.add(household)
+    db.flush()
+    log_action(db, user_id=_admin.user_id, action="create", entity_type="household", entity_id=household.household_id,
+        details={"summary": f"Created household '{payload.name}'"})
     db.commit()
     db.refresh(household)
     return {
@@ -140,6 +144,8 @@ def update_household(
     if payload.address         is not None: h.address         = payload.address
     if payload.primary_user_id is not None: h.primary_user_id = payload.primary_user_id
 
+    log_action(db, user_id=_admin.user_id, action="update", entity_type="household", entity_id=household_id,
+        details={"summary": f"Updated household '{h.name}'"})
     db.commit()
     return {"detail": "Household updated"}
 
@@ -167,6 +173,8 @@ def request_to_join(
         f"{current_user.firstname} {current_user.lastname} requested to join {h.name} ({h.household_code})",
         current_user.user_id,
     )
+    log_action(db, user_id=current_user.user_id, action="join_request", entity_type="household", entity_id=payload.household_id,
+        details={"summary": f"{current_user.firstname} {current_user.lastname} requested to join {h.name}"})
     db.commit()
     return {"detail": "Join request submitted and pending admin approval"}
 
@@ -192,6 +200,8 @@ def approve_join_request(
     if not h.primary_user_id:
         h.primary_user_id = user_id
 
+    log_action(db, user_id=_admin.user_id, action="approve", entity_type="household", entity_id=household_id,
+        details={"summary": f"Approved {user.firstname} {user.lastname} to join household"})
     db.commit()
     return {"detail": "Join request approved"}
 
@@ -210,6 +220,8 @@ def reject_join_request(
         raise HTTPException(status_code=400, detail="No pending request for this household")
 
     user.household_request_id = None
+    log_action(db, user_id=_admin.user_id, action="reject", entity_type="household", entity_id=household_id,
+        details={"summary": f"Rejected {user.firstname} {user.lastname}'s join request"})
     db.commit()
     return {"detail": "Join request rejected"}
 
@@ -237,5 +249,7 @@ def remove_member(
         ).first()
         h.primary_user_id = other.user_id if other else None
 
+    log_action(db, user_id=_admin.user_id, action="remove_member", entity_type="household", entity_id=household_id,
+        details={"summary": f"Removed {user.firstname} {user.lastname} from household"})
     db.commit()
     return {"detail": "Member removed from household"}

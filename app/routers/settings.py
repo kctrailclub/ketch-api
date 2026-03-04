@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_action
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_raw_email
@@ -157,6 +158,9 @@ def update_reward_settings(
     set_setting(db, "reward_email_body",    payload.reward_email_body)
     set_setting(db, "nudge_email_subject",  payload.nudge_email_subject)
     set_setting(db, "nudge_email_body",     payload.nudge_email_body)
+    log_action(db, user_id=_admin.user_id, action="update", entity_type="settings",
+        details={"summary": f"Updated reward settings (threshold: {payload.reward_threshold})"})
+    db.commit()
     return {"detail": "Settings saved"}
 
 
@@ -232,6 +236,9 @@ def send_reward_emails(
         except Exception as e:
             errors.append(f"{primary.email}: {str(e)}")
 
+    log_action(db, user_id=_admin.user_id, action="send_emails", entity_type="settings",
+        details={"summary": f"Sent {sent} {payload.email_type} email{'s' if sent != 1 else ''}", "type": payload.email_type, "count": sent})
+    db.commit()
     return {
         "sent":   sent,
         "errors": errors,

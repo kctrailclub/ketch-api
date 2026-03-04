@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.core.audit import log_action
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.models.models import Hour, Notification, Project, User
@@ -105,6 +106,10 @@ def submit_hours(
             hour.hour_id,
         )
 
+    log_action(db, user_id=current_user.user_id, action="create", entity_type="hour", entity_id=hour.hour_id,
+        details={"summary": f"{member.firstname} {member.lastname} logged {payload.hours}h on {project.name}",
+                 "member_id": payload.member_id, "project": project.name,
+                 "hours": payload.hours, "auto_approved": auto_approve})
     db.commit()
     detail = "Hours approved" if auto_approve else "Hours submitted and pending approval"
     return {"hour_id": hour.hour_id, "detail": detail}
@@ -202,6 +207,9 @@ def review_hours(
     hour.status_updated = datetime.now(timezone.utc)
     hour.status_by      = current_admin.user_id
 
+    log_action(db, user_id=current_admin.user_id, action=payload.status, entity_type="hour", entity_id=hour_id,
+        details={"summary": f"{payload.status.title()} {float(hour.hours)}h for {hour.member.firstname} {hour.member.lastname}",
+                 "status_note": payload.status_note})
     db.commit()
     return {"detail": f"Hours {payload.status}"}
 
@@ -222,6 +230,8 @@ def approve_all_hours(
         hour.status_by = current_admin.user_id
         count += 1
 
+    log_action(db, user_id=current_admin.user_id, action="approve_all", entity_type="hour",
+        details={"summary": f"Bulk approved {count} pending hour records", "count": count})
     db.commit()
     return {"detail": f"{count} hour record{'s' if count != 1 else ''} approved"}
 
@@ -242,6 +252,9 @@ def update_hours(
         raise HTTPException(status_code=403, detail="You can only edit your own hours")
     if hour.status != "pending":
         raise HTTPException(status_code=400, detail="Only pending records can be edited")
+
+    old_vals = {"project_id": hour.project_id, "service_date": str(hour.service_date),
+                "hours": float(hour.hours), "notes": hour.notes}
 
     if payload.project_id is not None:
         project = db.get(Project, payload.project_id)
@@ -268,6 +281,10 @@ def update_hours(
     if payload.notes is not None:
         hour.notes = payload.notes
 
+    new_vals = {"project_id": hour.project_id, "service_date": str(hour.service_date),
+                "hours": float(hour.hours), "notes": hour.notes}
+    log_action(db, user_id=current_user.user_id, action="update", entity_type="hour", entity_id=hour_id,
+        details={"summary": f"Edited pending hours (id={hour_id})", "old": old_vals, "new": new_vals})
     db.commit()
 
     return {
@@ -298,6 +315,9 @@ def delete_hours(
         if hour.status != "pending":
             raise HTTPException(status_code=400, detail="Only pending records can be deleted")
 
+    log_action(db, user_id=current_user.user_id, action="delete", entity_type="hour", entity_id=hour_id,
+        details={"summary": f"Deleted hour record #{hour_id} ({float(hour.hours)}h)",
+                 "member_id": hour.member_id, "project_id": hour.project_id, "hours": float(hour.hours)})
     db.delete(hour)
     db.commit()
     return {"detail": "Hour record deleted"}

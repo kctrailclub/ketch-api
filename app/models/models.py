@@ -3,7 +3,7 @@ from typing import Optional
 
 from sqlalchemy import (
     BigInteger, Column, Date, DateTime, Enum, ForeignKey,
-    Integer, Numeric, String, Text,
+    Integer, JSON, Numeric, String, Text,
 )
 from sqlalchemy.orm import relationship
 
@@ -121,3 +121,18 @@ class Setting(Base):
 
     key   = Column(String(100), primary_key=True)
     value = Column(Text, nullable=True)
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    audit_log_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id      = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    action       = Column(String(50), nullable=False)
+    entity_type  = Column(String(50), nullable=False)
+    entity_id    = Column(Integer, nullable=True)
+    details      = Column(JSON, nullable=True)
+    ip_address   = Column(String(45), nullable=True)
+    created      = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    user         = relationship("User", foreign_keys=[user_id])

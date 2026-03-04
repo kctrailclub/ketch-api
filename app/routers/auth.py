@@ -1,7 +1,7 @@
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
@@ -16,6 +16,7 @@ from app.core.security import (
     hash_password,
     verify_password,
 )
+from app.core.audit import log_action
 from app.models.models import User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -58,7 +59,7 @@ class ForgotPasswordRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
 
     if not user or not verify_password(payload.password, user.password_hash):
@@ -78,6 +79,9 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         )
 
     user.last_login = datetime.now(timezone.utc)
+    log_action(db, user_id=user.user_id, action="login", entity_type="user", entity_id=user.user_id,
+        details={"summary": f"{user.firstname} {user.lastname} logged in"},
+        ip_address=request.client.host if request.client else None)
     db.commit()
 
     return TokenResponse(
@@ -130,6 +134,8 @@ def set_password(payload: SetPasswordRequest, db: Session = Depends(get_db)):
     user.invite_token   = None
     user.invite_expires = None
     user.is_active      = 1
+    log_action(db, user_id=user.user_id, action="set_password", entity_type="user", entity_id=user.user_id,
+        details={"summary": f"{user.firstname} {user.lastname} set their password"})
     db.commit()
 
     return {"detail": "Password set successfully"}
@@ -146,6 +152,8 @@ def change_password(
     if len(payload.new_password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
     current_user.password_hash = hash_password(payload.new_password)
+    log_action(db, user_id=current_user.user_id, action="change_password", entity_type="user", entity_id=current_user.user_id,
+        details={"summary": f"{current_user.firstname} {current_user.lastname} changed their password"})
     db.commit()
     return {"detail": "Password updated successfully"}
 

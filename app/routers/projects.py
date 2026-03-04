@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
+from app.core.audit import log_action
 from app.models.models import Project, User
 
 router = APIRouter(prefix="/projects", tags=["projects"])
@@ -79,6 +80,9 @@ def create_project(
         end_date=payload.end_date,
     )
     db.add(project)
+    db.flush()
+    log_action(db, user_id=_admin.user_id, action="create", entity_type="project", entity_id=project.project_id,
+        details={"summary": f"Created project '{payload.name}'"})
     db.commit()
     db.refresh(project)
     return {"project_id": project.project_id, "detail": "Project created"}
@@ -100,5 +104,7 @@ def update_project(
     if payload.project_type is not None: project.project_type = payload.project_type
     if payload.end_date     is not None: project.end_date     = payload.end_date
 
+    log_action(db, user_id=_admin.user_id, action="update", entity_type="project", entity_id=project_id,
+        details={"summary": f"Updated project '{project.name}'"})
     db.commit()
     return {"detail": "Project updated"}
