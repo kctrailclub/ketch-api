@@ -23,6 +23,12 @@ class SubmitHoursRequest(BaseModel):
     hours:        float
     notes:        Optional[str] = None
 
+class UpdateHoursRequest(BaseModel):
+    project_id:   Optional[int]   = None
+    service_date: Optional[date]  = None
+    hours:        Optional[float] = None
+    notes:        Optional[str]   = None
+
 class ReviewHoursRequest(BaseModel):
     status:      str          # "approved" or "rejected"
     status_note: Optional[str] = None
@@ -218,6 +224,61 @@ def approve_all_hours(
 
     db.commit()
     return {"detail": f"{count} hour record{'s' if count != 1 else ''} approved"}
+
+
+@router.patch("/{hour_id}")
+def update_hours(
+    hour_id: int,
+    payload: UpdateHoursRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    hour = db.get(Hour, hour_id)
+    if not hour:
+        raise HTTPException(status_code=404, detail="Hour record not found")
+
+    # Only the submitter can edit, and only while pending
+    if hour.member_id != current_user.user_id:
+        raise HTTPException(status_code=403, detail="You can only edit your own hours")
+    if hour.status != "pending":
+        raise HTTPException(status_code=400, detail="Only pending records can be edited")
+
+    if payload.project_id is not None:
+        project = db.get(Project, payload.project_id)
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+        svc_date = payload.service_date or hour.service_date
+        if project.end_date and project.end_date < svc_date:
+            raise HTTPException(status_code=400, detail="Project has ended")
+        hour.project_id = payload.project_id
+
+    if payload.service_date is not None:
+        if payload.service_date.year != date.today().year:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Hours can only be logged for the current calendar year ({date.today().year}).",
+            )
+        hour.service_date = payload.service_date
+
+    if payload.hours is not None:
+        if payload.hours <= 0:
+            raise HTTPException(status_code=400, detail="Hours must be greater than zero")
+        hour.hours = payload.hours
+
+    if payload.notes is not None:
+        hour.notes = payload.notes
+
+    db.commit()
+
+    return {
+        "hour_id":      hour.hour_id,
+        "project_id":   hour.project_id,
+        "project_name": hour.project.name,
+        "service_date": hour.service_date,
+        "hours":        float(hour.hours),
+        "notes":        hour.notes,
+        "detail":       "Hours updated",
+    }
 
 
 @router.delete("/{hour_id}")
