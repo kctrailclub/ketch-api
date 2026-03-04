@@ -197,6 +197,33 @@ def query_health_check():
         result["error"] = "ANTHROPIC_API_KEY is not set"
         return result
 
+    # Test 1: Can we resolve api.anthropic.com?
+    import socket
+    try:
+        ip = socket.getaddrinfo("api.anthropic.com", 443)[0][4][0]
+        result["dns_resolve"] = ip
+    except Exception as e:
+        result["dns_resolve"] = f"FAILED: {e}"
+
+    # Test 2: Can we open a raw TCP connection?
+    try:
+        sock = socket.create_connection(("api.anthropic.com", 443), timeout=5)
+        sock.close()
+        result["tcp_connect"] = "ok"
+    except Exception as e:
+        result["tcp_connect"] = f"FAILED: {e}"
+
+    # Test 3: Can we make an HTTPS request with httpx directly?
+    try:
+        import httpx
+        resp = httpx.get("https://api.anthropic.com/v1/models", timeout=10,
+                         headers={"x-api-key": settings.anthropic_api_key,
+                                  "anthropic-version": "2023-06-01"})
+        result["httpx_test"] = f"status={resp.status_code}"
+    except Exception as e:
+        result["httpx_test"] = f"FAILED: {type(e).__name__}: {e}"
+
+    # Test 4: Try Anthropic SDK
     try:
         client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
         message = client.messages.create(
@@ -210,6 +237,7 @@ def query_health_check():
         result["error"] = f"AuthenticationError: {str(e)}"
     except anthropic.APIConnectionError as e:
         result["error"] = f"APIConnectionError: {str(e)}"
+        result["error_cause"] = f"{type(e.__cause__).__name__}: {e.__cause__}" if e.__cause__ else "no cause"
     except anthropic.APIStatusError as e:
         result["error"] = f"APIStatusError ({e.status_code}): {e.message}"
     except Exception as e:
