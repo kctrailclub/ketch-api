@@ -2,13 +2,12 @@ import html
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_raw_email
-from app.models.models import Hour, User, Household
+from app.models.models import Hour, User, Household, Setting
 from sqlalchemy import func
 from datetime import date
 
@@ -20,15 +19,16 @@ router = APIRouter(prefix="/settings", tags=["settings"])
 # ---------------------------------------------------------------------------
 
 def get_setting(db: Session, key: str) -> str:
-    row = db.execute(text("SELECT `value` FROM settings WHERE `key` = :k"), {"k": key}).fetchone()
-    return row[0] if row else None
+    row = db.query(Setting).filter(Setting.key == key).first()
+    return row.value if row else None
 
 
 def set_setting(db: Session, key: str, value: str):
-    db.execute(
-        text("INSERT INTO settings (`key`, `value`) VALUES (:k, :v) ON DUPLICATE KEY UPDATE `value` = :v"),
-        {"k": key, "v": value}
-    )
+    row = db.query(Setting).filter(Setting.key == key).first()
+    if row:
+        row.value = value
+    else:
+        db.add(Setting(key=key, value=value))
     db.commit()
 
 
