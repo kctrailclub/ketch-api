@@ -184,9 +184,8 @@ def _validate_sql(sql: str) -> str:
 # ---------------------------------------------------------------------------
 
 @router.get("/query/health")
-def query_health_check(
-    _admin: User = Depends(get_current_admin),
-):
+def query_health_check():
+    """Temporary: no auth required for diagnostics. Re-enable auth after debugging."""
     """Diagnostic endpoint to test Anthropic API connectivity."""
     result = {
         "api_key_set": bool(settings.anthropic_api_key),
