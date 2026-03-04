@@ -3,6 +3,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -39,6 +40,18 @@ class ReviewHoursRequest(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+def _daily_hours(db: Session, member_id: int, service_date: date, exclude_hour_id: int = None) -> float:
+    """Sum of non-rejected hours already logged for a member on a given date."""
+    q = db.query(func.coalesce(func.sum(Hour.hours), 0)).filter(
+        Hour.member_id == member_id,
+        Hour.service_date == service_date,
+        Hour.status != "rejected",
+    )
+    if exclude_hour_id:
+        q = q.filter(Hour.hour_id != exclude_hour_id)
+    return float(q.scalar())
+
+
 def _notify_admins(db: Session, message: str, reference_id: int) -> None:
     admins = db.query(User).filter(User.is_admin == 1, User.is_active == 1).all()
     for admin in admins:
@@ -66,6 +79,13 @@ def submit_hours(
 
     if payload.hours <= 0:
         raise HTTPException(status_code=400, detail="Hours must be greater than zero")
+
+    existing = _daily_hours(db, payload.member_id, payload.service_date)
+    if existing + payload.hours > 24:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Cannot exceed 24 hours per day. {existing:.1f}h already logged for {payload.service_date}.",
+        )
 
     if payload.service_date.year != date.today().year:
         raise HTTPException(
@@ -280,6 +300,14 @@ def update_hours(
 
     if payload.notes is not None:
         hour.notes = payload.notes
+
+    if payload.hours is not None or payload.service_date is not None:
+        existing = _daily_hours(db, hour.member_id, hour.service_date, exclude_hour_id=hour.hour_id)
+        if existing + float(hour.hours) > 24:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Cannot exceed 24 hours per day. {existing:.1f}h already logged for {hour.service_date}.",
+            )
 
     new_vals = {"project_id": hour.project_id, "service_date": str(hour.service_date),
                 "hours": float(hour.hours), "notes": hour.notes}
