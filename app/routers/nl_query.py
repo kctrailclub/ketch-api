@@ -183,6 +183,42 @@ def _validate_sql(sql: str) -> str:
 # Endpoints
 # ---------------------------------------------------------------------------
 
+@router.get("/query/health")
+def query_health_check(
+    _admin: User = Depends(get_current_admin),
+):
+    """Diagnostic endpoint to test Anthropic API connectivity."""
+    result = {
+        "api_key_set": bool(settings.anthropic_api_key),
+        "api_key_prefix": settings.anthropic_api_key[:12] + "..." if settings.anthropic_api_key else None,
+        "model": "claude-3-5-haiku-20241022",
+    }
+
+    if not settings.anthropic_api_key:
+        result["error"] = "ANTHROPIC_API_KEY is not set"
+        return result
+
+    try:
+        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
+        message = client.messages.create(
+            model="claude-3-5-haiku-20241022",
+            max_tokens=10,
+            messages=[{"role": "user", "content": "Reply with OK"}],
+        )
+        result["status"] = "ok"
+        result["response"] = message.content[0].text
+    except anthropic.AuthenticationError as e:
+        result["error"] = f"AuthenticationError: {str(e)}"
+    except anthropic.APIConnectionError as e:
+        result["error"] = f"APIConnectionError: {str(e)}"
+    except anthropic.APIStatusError as e:
+        result["error"] = f"APIStatusError ({e.status_code}): {e.message}"
+    except Exception as e:
+        result["error"] = f"{type(e).__name__}: {str(e)}"
+
+    return result
+
+
 @router.post("/query")
 def natural_language_query(
     payload: NLQueryRequest,
