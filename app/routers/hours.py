@@ -267,11 +267,14 @@ def update_hours(
     if not hour:
         raise HTTPException(status_code=404, detail="Hour record not found")
 
-    # Only the submitter can edit, and only while pending
-    if hour.member_id != current_user.user_id:
-        raise HTTPException(status_code=403, detail="You can only edit your own hours")
-    if hour.status != "pending":
-        raise HTTPException(status_code=400, detail="Only pending records can be edited")
+    is_admin = bool(current_user.is_admin)
+
+    # Non-admins can only edit their own pending hours
+    if not is_admin:
+        if hour.member_id != current_user.user_id:
+            raise HTTPException(status_code=403, detail="You can only edit your own hours")
+        if hour.status != "pending":
+            raise HTTPException(status_code=400, detail="Only pending records can be edited")
 
     old_vals = {"project_id": hour.project_id, "service_date": str(hour.service_date),
                 "hours": float(hour.hours), "notes": hour.notes}
@@ -311,8 +314,11 @@ def update_hours(
 
     new_vals = {"project_id": hour.project_id, "service_date": str(hour.service_date),
                 "hours": float(hour.hours), "notes": hour.notes}
+    member = hour.member
+    summary = (f"Admin edited {hour.status} hours for {member.firstname} {member.lastname} (id={hour_id})"
+               if is_admin else f"Edited pending hours (id={hour_id})")
     log_action(db, user_id=current_user.user_id, action="update", entity_type="hour", entity_id=hour_id,
-        details={"summary": f"Edited pending hours (id={hour_id})", "old": old_vals, "new": new_vals})
+        details={"summary": summary, "old": old_vals, "new": new_vals})
     db.commit()
 
     return {
