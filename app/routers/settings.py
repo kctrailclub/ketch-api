@@ -8,7 +8,7 @@ from app.core.audit import log_action
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_raw_email
-from app.models.models import Hour, User, Household, Setting
+from app.models.models import Hour, Project, User, Household, Setting
 from sqlalchemy import func
 from datetime import date
 
@@ -76,28 +76,32 @@ def get_reward_settings(
 ):
     threshold = int(get_setting(db, "reward_threshold") or 10)
 
-    # Calculate household hours for current year
+    # Calculate household credited hours for current year
     current_year = date.today().year
-    results = (
-        db.query(
-            Hour.member_id,
-            func.sum(Hour.hours).label("total_hours")
-        )
+    hour_records = (
+        db.query(Hour)
         .filter(
             Hour.status == "approved",
             func.year(Hour.service_date) == current_year,
         )
-        .group_by(Hour.member_id)
         .all()
     )
 
-    # Aggregate by household
+    # Aggregate by household, applying youth credit per-project
     hh_hours = {}
-    for member_id, total in results:
-        user = db.get(User, member_id)
+    hh_has_youth = {}
+    for h in hour_records:
+        user = h.member
         if not user or not user.household_id:
             continue
-        hh_hours[user.household_id] = hh_hours.get(user.household_id, 0) + float(total)
+        hid = user.household_id
+        raw = float(h.hours)
+        if user.youth:
+            credited = raw * (h.project.youth_credit_pct / 100)
+            hh_has_youth[hid] = True
+        else:
+            credited = raw
+        hh_hours[hid] = hh_hours.get(hid, 0) + credited
 
     qualified  = []  # >= threshold
     close      = []  # >= threshold/2 but < threshold
@@ -125,6 +129,7 @@ def get_reward_settings(
             "firstname":      primary.firstname,
             "hours":          round(hours, 2),
             "remaining":      round(max(threshold - hours, 0), 2),
+            "has_youth_hours": hh_has_youth.get(hh_id, False),
         }
 
         if hours >= threshold:
@@ -182,21 +187,21 @@ def send_reward_emails(
         subject_tpl = get_setting(db, "nudge_email_subject")
         body_tpl    = get_setting(db, "nudge_email_body")
 
-    # Re-fetch hours to get current values
+    # Re-fetch hours to get current credited values
     current_year = date.today().year
-    results = (
-        db.query(Hour.member_id, func.sum(Hour.hours).label("total_hours"))
+    hour_records = (
+        db.query(Hour)
         .filter(Hour.status == "approved", func.year(Hour.service_date) == current_year)
-        .group_by(Hour.member_id)
         .all()
     )
     hh_hours = {}
-    hh_primary = {}
-    for member_id, total in results:
-        user = db.get(User, member_id)
+    for h in hour_records:
+        user = h.member
         if not user or not user.household_id:
             continue
-        hh_hours[user.household_id] = hh_hours.get(user.household_id, 0) + float(total)
+        raw = float(h.hours)
+        credited = raw * (h.project.youth_credit_pct / 100) if user.youth else raw
+        hh_hours[user.household_id] = hh_hours.get(user.household_id, 0) + credited
 
     sent = 0
     errors = []

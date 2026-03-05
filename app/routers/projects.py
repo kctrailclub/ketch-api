@@ -18,16 +18,18 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 # ---------------------------------------------------------------------------
 
 class CreateProjectRequest(BaseModel):
-    name:         str
-    notes:        Optional[str] = None
-    project_type: str = "ongoing"
-    end_date:     Optional[date] = None
+    name:             str
+    notes:            Optional[str] = None
+    project_type:     str = "ongoing"
+    end_date:         Optional[date] = None
+    youth_credit_pct: Optional[int] = None
 
 class UpdateProjectRequest(BaseModel):
-    name:         Optional[str] = None
-    notes:        Optional[str] = None
-    project_type: Optional[str] = None
-    end_date:     Optional[date] = None
+    name:             Optional[str] = None
+    notes:            Optional[str] = None
+    project_type:     Optional[str] = None
+    end_date:         Optional[date] = None
+    youth_credit_pct: Optional[int] = None
 
 
 # ---------------------------------------------------------------------------
@@ -52,11 +54,12 @@ def list_projects(
     projects = q.order_by(Project.name).all()
     return [
         {
-            "project_id":   p.project_id,
-            "name":         p.name,
-            "notes":        p.notes,
-            "project_type": p.project_type,
-            "end_date":     p.end_date,
+            "project_id":       p.project_id,
+            "name":             p.name,
+            "notes":            p.notes,
+            "project_type":     p.project_type,
+            "end_date":         p.end_date,
+            "youth_credit_pct": p.youth_credit_pct,
         }
         for p in projects
     ]
@@ -73,11 +76,14 @@ def create_project(
     if payload.project_type == "one_time" and not payload.end_date:
         raise HTTPException(status_code=400, detail="end_date is required for one_time projects")
 
+    youth_pct = max(0, min(100, payload.youth_credit_pct)) if payload.youth_credit_pct is not None else 50
+
     project = Project(
         name=payload.name,
         notes=payload.notes,
         project_type=payload.project_type,
         end_date=payload.end_date,
+        youth_credit_pct=youth_pct,
     )
     db.add(project)
     db.flush()
@@ -99,10 +105,11 @@ def update_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if payload.name         is not None: project.name         = payload.name
-    if payload.notes        is not None: project.notes        = payload.notes
-    if payload.project_type is not None: project.project_type = payload.project_type
-    if payload.end_date     is not None: project.end_date     = payload.end_date
+    if payload.name             is not None: project.name             = payload.name
+    if payload.notes            is not None: project.notes            = payload.notes
+    if payload.project_type     is not None: project.project_type     = payload.project_type
+    if payload.end_date         is not None: project.end_date         = payload.end_date
+    if payload.youth_credit_pct is not None: project.youth_credit_pct = max(0, min(100, payload.youth_credit_pct))
 
     log_action(db, user_id=_admin.user_id, action="update", entity_type="project", entity_id=project_id,
         details={"summary": f"Updated project '{project.name}'"})

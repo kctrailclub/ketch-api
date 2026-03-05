@@ -58,11 +58,12 @@ class Project(Base):
     name         = Column(String(255), nullable=False)
     notes        = Column(Text, nullable=True)
     project_type = Column(Enum("one_time", "ongoing"), nullable=False, default="ongoing")
-    end_date     = Column(Date, nullable=True)
-    created      = Column(DateTime, nullable=False, default=datetime.utcnow)
-    updated      = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+    end_date         = Column(Date, nullable=True)
+    youth_credit_pct = Column(Integer, nullable=False, default=50)
+    created          = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated          = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    hours        = relationship("Hour", back_populates="project")
+    hours            = relationship("Hour", back_populates="project")
 
 
 class Hour(Base):

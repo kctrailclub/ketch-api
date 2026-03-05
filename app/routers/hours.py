@@ -170,17 +170,19 @@ def list_hours(
 
     return [
         {
-            "hour_id":      h.hour_id,
-            "member_id":    h.member_id,
-            "member_name":  f"{h.member.firstname} {h.member.lastname}",
-            "project_id":   h.project_id,
-            "project_name": h.project.name,
-            "service_date": h.service_date,
-            "hours":        float(h.hours),
-            "notes":        h.notes,
-            "status":       h.status,
-            "status_note":  h.status_note,
-            "created":      h.created,
+            "hour_id":          h.hour_id,
+            "member_id":        h.member_id,
+            "member_name":      f"{h.member.firstname} {h.member.lastname}",
+            "project_id":       h.project_id,
+            "project_name":     h.project.name,
+            "service_date":     h.service_date,
+            "hours":            float(h.hours),
+            "notes":            h.notes,
+            "status":           h.status,
+            "status_note":      h.status_note,
+            "created":          h.created,
+            "is_youth":         bool(h.member.youth),
+            "youth_credit_pct": h.project.youth_credit_pct,
         }
         for h in hours
     ]
