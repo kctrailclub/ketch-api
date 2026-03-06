@@ -87,6 +87,11 @@ def submit_hours(
             detail=f"Cannot exceed 24 hours per day. {existing:.1f}h already logged for {payload.service_date}.",
         )
 
+    if payload.service_date > date.today():
+        raise HTTPException(
+            status_code=400,
+            detail="Service date cannot be in the future.",
+        )
     if payload.service_date.year != date.today().year:
         raise HTTPException(
             status_code=400,
@@ -291,6 +296,11 @@ def update_hours(
         hour.project_id = payload.project_id
 
     if payload.service_date is not None:
+        if payload.service_date > date.today():
+            raise HTTPException(
+                status_code=400,
+                detail="Service date cannot be in the future.",
+            )
         if payload.service_date.year != date.today().year:
             raise HTTPException(
                 status_code=400,
