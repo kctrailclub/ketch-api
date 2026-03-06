@@ -139,6 +139,16 @@ class AuditLog(Base):
     user         = relationship("User", foreign_keys=[user_id])
 
 
+class RefreshToken(Base):
+    __tablename__ = "refresh_tokens"
+
+    id         = Column(Integer, primary_key=True, autoincrement=True)
+    user_id    = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    token_hash = Column(String(64), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+
 class ResourceSponsor(Base):
     __tablename__ = "resource_sponsors"
 

@@ -1,3 +1,5 @@
+import hashlib
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -27,16 +29,14 @@ def create_access_token(user_id: int) -> str:
     return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
 
 
-def create_refresh_token(user_id: int) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(
-        days=settings.refresh_token_expire_days
-    )
-    payload = {
-        "sub": str(user_id),
-        "exp": expire,
-        "type": "refresh",
-    }
-    return jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
+def generate_refresh_token() -> str:
+    """Return an opaque, URL-safe refresh token (not a JWT)."""
+    return secrets.token_urlsafe(64)
+
+
+def hash_token(token: str) -> str:
+    """SHA-256 hex digest — used to store refresh tokens safely."""
+    return hashlib.sha256(token.encode()).hexdigest()
 
 
 def decode_token(token: str) -> Optional[dict]:

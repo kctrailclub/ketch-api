@@ -11,7 +11,7 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_invite_email
 from app.core.audit import log_action
-from app.models.models import User
+from app.models.models import RefreshToken, User
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -166,7 +166,10 @@ def update_user(
     if payload.email        is not None: user.email        = payload.email
     if payload.phone        is not None: user.phone        = payload.phone
     if payload.is_admin     is not None: user.is_admin     = int(payload.is_admin)
-    if payload.is_active    is not None: user.is_active    = int(payload.is_active)
+    if payload.is_active is not None:
+        user.is_active = int(payload.is_active)
+        if not payload.is_active:
+            db.query(RefreshToken).filter(RefreshToken.user_id == user_id).delete()
     if payload.youth        is not None: user.youth        = int(payload.youth)
     if payload.household_id is not None: user.household_id = payload.household_id
     if payload.new_password:
