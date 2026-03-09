@@ -16,9 +16,10 @@ class Settings(BaseSettings):
     # Invite tokens
     invite_token_expire_hours: int = 72
 
-    # Email — Resend (preferred) or SMTP fallback
+    # Email — ZeptoMail (preferred), Resend, or SMTP fallback
+    zeptomail_token: str | None = None
     resend_api_key: str | None = None
-    email_from: str = "onboarding@resend.dev"
+    email_from: str = "noreply@kctrailclub.org"
     email_from_name: str = "KCTC Volunteer Hours"
     smtp_host: str | None = None
     smtp_port: int = 587

@@ -9,12 +9,39 @@ from app.core.config import settings
 
 
 def _send(to: str, subject: str, html: str) -> None:
-    if settings.resend_api_key:
+    if settings.zeptomail_token:
+        _send_zeptomail(to, subject, html)
+    elif settings.resend_api_key:
         _send_resend(to, subject, html)
     elif settings.smtp_host:
         _send_smtp(to, subject, html)
     else:
-        raise RuntimeError("No email provider configured (set RESEND_API_KEY or SMTP_HOST)")
+        raise RuntimeError("No email provider configured (set ZEPTOMAIL_TOKEN, RESEND_API_KEY, or SMTP_HOST)")
+
+
+def _send_zeptomail(to: str, subject: str, html: str) -> None:
+    payload = json.dumps({
+        "from": {"address": settings.email_from, "name": settings.email_from_name},
+        "to": [{"email_address": {"address": to}}],
+        "subject": subject,
+        "htmlbody": html,
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.zeptomail.com/v1.1/email",
+        data=payload,
+        headers={
+            "Authorization": settings.zeptomail_token,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        },
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req) as resp:
+        if resp.status not in (200, 201):
+            body = resp.read().decode()
+            raise RuntimeError(f"ZeptoMail API error {resp.status}: {body}")
 
 
 def _send_resend(to: str, subject: str, html: str) -> None:
