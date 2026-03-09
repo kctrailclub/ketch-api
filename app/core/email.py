@@ -1,22 +1,39 @@
 import html as html_mod
 import json
+import logging
 import smtplib
 import urllib.request
+import urllib.error
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
 from app.core.config import settings
 
+log = logging.getLogger(__name__)
+
 
 def _send(to: str, subject: str, html: str) -> None:
     if settings.zeptomail_token:
-        _send_zeptomail(to, subject, html)
+        provider = "ZeptoMail"
     elif settings.resend_api_key:
-        _send_resend(to, subject, html)
+        provider = "Resend"
     elif settings.smtp_host:
-        _send_smtp(to, subject, html)
+        provider = "SMTP"
     else:
         raise RuntimeError("No email provider configured (set ZEPTOMAIL_TOKEN, RESEND_API_KEY, or SMTP_HOST)")
+
+    log.info("Sending email via %s to=%s subject=%r", provider, to, subject)
+    try:
+        if provider == "ZeptoMail":
+            _send_zeptomail(to, subject, html)
+        elif provider == "Resend":
+            _send_resend(to, subject, html)
+        else:
+            _send_smtp(to, subject, html)
+        log.info("Email sent successfully via %s to=%s", provider, to)
+    except Exception as exc:
+        log.error("Email failed via %s to=%s: %s", provider, to, exc)
+        raise
 
 
 def _send_zeptomail(to: str, subject: str, html: str) -> None:
@@ -38,10 +55,12 @@ def _send_zeptomail(to: str, subject: str, html: str) -> None:
         method="POST",
     )
 
-    with urllib.request.urlopen(req) as resp:
-        if resp.status not in (200, 201):
-            body = resp.read().decode()
-            raise RuntimeError(f"ZeptoMail API error {resp.status}: {body}")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode()
+        raise RuntimeError(f"ZeptoMail API error {exc.code}: {body}") from exc
 
 
 def _send_resend(to: str, subject: str, html: str) -> None:
@@ -62,10 +81,12 @@ def _send_resend(to: str, subject: str, html: str) -> None:
         method="POST",
     )
 
-    with urllib.request.urlopen(req) as resp:
-        if resp.status not in (200, 201):
-            body = resp.read().decode()
-            raise RuntimeError(f"Resend API error {resp.status}: {body}")
+    try:
+        with urllib.request.urlopen(req) as resp:
+            resp.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode()
+        raise RuntimeError(f"Resend API error {exc.code}: {body}") from exc
 
 
 def _send_smtp(to: str, subject: str, html: str) -> None:
