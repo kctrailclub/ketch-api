@@ -149,6 +149,20 @@ class RefreshToken(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class RewardEmail(Base):
+    __tablename__ = "reward_emails"
+
+    reward_email_id = Column(Integer, primary_key=True, autoincrement=True)
+    household_id    = Column(Integer, ForeignKey("households.household_id", ondelete="CASCADE"), nullable=False)
+    email_type      = Column(Enum("reward", "nudge"), nullable=False)
+    year            = Column(Integer, nullable=False)
+    sent_by         = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    sent_at         = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    household       = relationship("Household", foreign_keys=[household_id])
+    sender          = relationship("User", foreign_keys=[sent_by])
+
+
 class ResourceSponsor(Base):
     __tablename__ = "resource_sponsors"
 

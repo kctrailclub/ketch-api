@@ -8,8 +8,8 @@ from app.core.audit import log_action
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_raw_email
-from app.models.models import Hour, Project, User, Household, Setting
-from sqlalchemy import func
+from app.models.models import Hour, Project, User, Household, Setting, RewardEmail
+from sqlalchemy import func, desc
 from datetime import date
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -140,6 +140,32 @@ def get_reward_settings(
     qualified.sort(key=lambda x: x["hours"], reverse=True)
     close.sort(key=lambda x: x["hours"], reverse=True)
 
+    # Fetch most-recent reward email per household+type for current year
+    recent_sends = (
+        db.query(RewardEmail)
+        .filter(RewardEmail.year == current_year)
+        .order_by(RewardEmail.household_id, RewardEmail.email_type, desc(RewardEmail.sent_at))
+        .all()
+    )
+    send_map = {}
+    for s in recent_sends:
+        key = (s.household_id, s.email_type)
+        if key not in send_map:
+            sender_name = None
+            if s.sent_by:
+                sender = db.get(User, s.sent_by)
+                if sender:
+                    sender_name = f"{sender.firstname} {sender.lastname}"
+            send_map[key] = {
+                "sent_by_name": sender_name,
+                "sent_at": s.sent_at.isoformat() if s.sent_at else None,
+            }
+
+    for entry in qualified:
+        entry["last_sent"] = send_map.get((entry["household_id"], "reward"))
+    for entry in close:
+        entry["last_sent"] = send_map.get((entry["household_id"], "nudge"))
+
     return {
         "threshold":            threshold,
         "reward_email_subject": get_setting(db, "reward_email_subject"),
@@ -238,6 +264,12 @@ def send_reward_emails(
         try:
             send_raw_email(primary.email, subject, body)
             sent += 1
+            db.add(RewardEmail(
+                household_id=hh_id,
+                email_type=payload.email_type,
+                year=current_year,
+                sent_by=_admin.user_id,
+            ))
         except Exception as e:
             errors.append(f"{primary.email}: {str(e)}")
 
