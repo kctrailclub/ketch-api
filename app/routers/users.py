@@ -229,7 +229,6 @@ def send_all_invites(
         .filter(
             User.is_active == 1,
             User.last_login.is_(None),
-            User.password_hash == "",
         )
         .all()
     )
