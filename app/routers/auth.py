@@ -1,3 +1,4 @@
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -150,7 +151,7 @@ def set_password(payload: SetPasswordRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=400, detail="Invalid or expired token")
 
-    if user.invite_expires and user.invite_expires < datetime.now(timezone.utc):
+    if user.invite_expires and user.invite_expires < datetime.utcnow():
         raise HTTPException(status_code=400, detail="Token has expired — request a new one")
 
     if len(payload.password) < 8:
@@ -200,7 +201,14 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
             hours=settings.invite_token_expire_hours
         )
         db.commit()
-        send_password_reset_email(user.email, user.firstname, token)
+        try:
+            send_password_reset_email(user.email, user.firstname, token)
+        except Exception as exc:
+            logging.getLogger(__name__).error("Password reset email failed for %s: %s", user.email, exc)
+            raise HTTPException(
+                status_code=502,
+                detail="Unable to send the reset email right now. Please try again later or contact info@kctrailclub.org for help.",
+            ) from exc
 
     return {"detail": "If that email is registered you will receive a reset link shortly"}
 
