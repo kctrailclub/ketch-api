@@ -1,3 +1,4 @@
+import logging
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -12,6 +13,8 @@ from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_invite_email
 from app.core.audit import log_action
 from app.models.models import RefreshToken, User
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/users", tags=["users"])
 
@@ -213,3 +216,46 @@ def resend_invite(
     except Exception:
         pass
     return {"detail": "Invite resent (email delivery requires SMTP configuration)"}
+
+
+@router.post("/bulk-invite")
+def send_all_invites(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_admin),
+):
+    """Send invite emails to all active users who have never logged in."""
+    eligible = (
+        db.query(User)
+        .filter(
+            User.is_active == 1,
+            User.last_login.is_(None),
+            User.password_hash == "",
+        )
+        .all()
+    )
+
+    sent, failed = 0, []
+    for user in eligible:
+        token = secrets.token_urlsafe(32)
+        user.invite_token = token
+        user.invite_expires = datetime.now(timezone.utc) + timedelta(
+            hours=settings.invite_token_expire_hours
+        )
+        db.flush()
+        try:
+            send_invite_email(user.email, user.firstname, token)
+            sent += 1
+            log.info("Bulk invite sent to %s", user.email)
+        except Exception as exc:
+            failed.append(f"{user.firstname} {user.lastname} ({user.email})")
+            log.error("Bulk invite failed for %s: %s", user.email, exc)
+
+    log_action(db, user_id=_admin.user_id, action="bulk_invite", entity_type="user", entity_id=None,
+        details={"summary": f"Bulk invite: {sent} sent, {len(failed)} failed", "failed": failed})
+    db.commit()
+
+    return {
+        "sent": sent,
+        "failed": failed,
+        "detail": f"{sent} invite{'s' if sent != 1 else ''} sent. {len(failed)} failed.",
+    }
