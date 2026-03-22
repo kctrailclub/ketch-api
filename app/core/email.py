@@ -127,6 +127,44 @@ def send_raw_email(to: str, subject: str, body: str) -> None:
     _send(to, subject, html)
 
 
+def send_registration_confirmation(to: str, firstname: str) -> None:
+    safe_name = html_mod.escape(firstname)
+    html = f"""
+    <p>Hi {safe_name},</p>
+    <p>Thank you for requesting an account on <strong>{settings.app_name}</strong>. Your request has been submitted and will be reviewed by an admin.</p>
+    <p><strong>Before you can volunteer, please complete the KCTC Volunteer Waiver on the
+    <a href="https://ken-carylranch.org">Ken-Caryl Ranch website</a>.</strong>
+    Your registration will be reviewed once your waiver is on file.</p>
+    <p>You'll receive an invite email once your account is approved.</p>
+    """
+    _send(to, f"Registration received — {settings.app_name}", html)
+
+
+def send_hours_logged_email(to: str, firstname: str, hours: float, project_name: str, service_date: str) -> None:
+    safe_name = html_mod.escape(firstname)
+    safe_project = html_mod.escape(project_name)
+    link = f"{settings.frontend_url}/hours"
+    html = f"""
+    <p>Hi {safe_name},</p>
+    <p>An admin has logged <strong>{hours}h</strong> for you on <strong>{safe_project}</strong> (service date: {service_date}).</p>
+    <p>These hours have been auto-approved and are reflected in your account.</p>
+    <p><a href="{link}">View your hours</a></p>
+    """
+    _send(to, f"Hours logged for you — {settings.app_name}", html)
+
+
+def send_hours_approved_email(to: str, firstname: str, hours: float, project_name: str, service_date: str) -> None:
+    safe_name = html_mod.escape(firstname)
+    safe_project = html_mod.escape(project_name)
+    link = f"{settings.frontend_url}/hours"
+    html = f"""
+    <p>Hi {safe_name},</p>
+    <p>Your <strong>{hours}h</strong> submitted for <strong>{safe_project}</strong> (service date: {service_date}) has been <strong>approved</strong>.</p>
+    <p><a href="{link}">View your hours</a></p>
+    """
+    _send(to, f"Hours approved — {settings.app_name}", html)
+
+
 def send_password_reset_email(to: str, firstname: str, token: str) -> None:
     safe_name = html_mod.escape(firstname)
     link = f"{settings.frontend_url}/set-password?token={token}"

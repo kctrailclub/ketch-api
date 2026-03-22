@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin
-from app.core.email import send_invite_email
+from app.core.email import send_invite_email, send_registration_confirmation
 from app.core.audit import log_action
 from app.models.models import Household, RegistrationRequest, User
 
@@ -78,6 +78,12 @@ def submit_registration(
     )
     db.add(reg)
     db.commit()
+
+    try:
+        send_registration_confirmation(payload.email, payload.firstname)
+    except Exception:
+        pass  # Don't block registration if email fails
+
     return {"detail": "Registration received"}
 
 

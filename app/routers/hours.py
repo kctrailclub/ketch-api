@@ -6,10 +6,15 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+import logging
+
 from app.core.audit import log_action
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
+from app.core.email import send_hours_logged_email, send_hours_approved_email
 from app.models.models import Hour, Notification, Project, User
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/hours", tags=["hours"])
 
@@ -148,6 +153,17 @@ def submit_hours(
                  "member_id": payload.member_id, "project": project.name,
                  "hours": payload.hours, "auto_approved": auto_approve})
     db.commit()
+
+    # Notify member when an admin logs hours on their behalf
+    if auto_approve and current_user.user_id != payload.member_id:
+        try:
+            send_hours_logged_email(
+                member.email, member.firstname,
+                payload.hours, project.name, str(payload.service_date),
+            )
+        except Exception as exc:
+            log.error("Failed to send hours-logged email to %s: %s", member.email, exc)
+
     detail = "Hours approved" if auto_approve else "Hours submitted and pending approval"
     return {"hour_id": hour.hour_id, "detail": detail}
 
@@ -252,6 +268,17 @@ def review_hours(
         details={"summary": f"{payload.status.title()} {float(hour.hours)}h for {hour.member.firstname} {hour.member.lastname}",
                  "status_note": payload.status_note})
     db.commit()
+
+    # Notify member when their hours are approved
+    if payload.status == "approved":
+        try:
+            send_hours_approved_email(
+                hour.member.email, hour.member.firstname,
+                float(hour.hours), hour.project.name, str(hour.service_date),
+            )
+        except Exception as exc:
+            log.error("Failed to send hours-approved email to %s: %s", hour.member.email, exc)
+
     return {"detail": f"Hours {payload.status}"}
 
 
@@ -265,15 +292,24 @@ def approve_all_hours(
         raise HTTPException(status_code=400, detail="No pending hours to approve")
 
     count = 0
+    notify_list = []
     for hour in pending:
         hour.status = "approved"
         hour.status_updated = datetime.now(timezone.utc)
         hour.status_by = current_admin.user_id
+        notify_list.append((hour.member.email, hour.member.firstname, float(hour.hours), hour.project.name, str(hour.service_date)))
         count += 1
 
     log_action(db, user_id=current_admin.user_id, action="approve_all", entity_type="hour",
         details={"summary": f"Bulk approved {count} pending hour records", "count": count})
     db.commit()
+
+    for email, firstname, hours, project_name, service_date in notify_list:
+        try:
+            send_hours_approved_email(email, firstname, hours, project_name, service_date)
+        except Exception as exc:
+            log.error("Failed to send hours-approved email to %s: %s", email, exc)
+
     return {"detail": f"{count} hour record{'s' if count != 1 else ''} approved"}
 
 
