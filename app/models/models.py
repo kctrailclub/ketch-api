@@ -75,6 +75,7 @@ class Hour(Base):
     project_id     = Column(Integer, ForeignKey("projects.project_id"), nullable=False)
     logged_by      = Column(Integer, ForeignKey("users.user_id"), nullable=False)
     service_date   = Column(Date, nullable=False)
+    credit_year    = Column(Integer, nullable=False)
     hours          = Column(Numeric(5, 2), nullable=False)
     notes          = Column(String(255), nullable=True)
     status         = Column(Enum("pending", "approved", "rejected"), nullable=False, default="pending")

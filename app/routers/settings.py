@@ -82,7 +82,7 @@ def get_reward_settings(
         db.query(Hour)
         .filter(
             Hour.status == "approved",
-            func.year(Hour.service_date) == current_year,
+            Hour.credit_year == current_year,
         )
         .all()
     )
@@ -217,7 +217,7 @@ def send_reward_emails(
     current_year = date.today().year
     hour_records = (
         db.query(Hour)
-        .filter(Hour.status == "approved", func.year(Hour.service_date) == current_year)
+        .filter(Hour.status == "approved", Hour.credit_year == current_year)
         .all()
     )
     hh_hours = {}

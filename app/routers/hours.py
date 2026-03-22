@@ -24,12 +24,14 @@ class SubmitHoursRequest(BaseModel):
     service_date: date
     hours:        float
     notes:        Optional[str] = None
+    credit_year:  Optional[int] = None  # admin-only; defaults to service_date year
 
 class UpdateHoursRequest(BaseModel):
     project_id:   Optional[int]   = None
     service_date: Optional[date]  = None
     hours:        Optional[float] = None
     notes:        Optional[str]   = None
+    credit_year:  Optional[int]   = None  # admin-only
 
 class ReviewHoursRequest(BaseModel):
     status:      str          # "approved" or "rejected"
@@ -92,11 +94,20 @@ def submit_hours(
             status_code=400,
             detail="Service date cannot be in the future.",
         )
-    if payload.service_date.year != date.today().year:
+    if not current_user.is_admin and payload.service_date.year != date.today().year:
         raise HTTPException(
             status_code=400,
             detail=f"Hours can only be logged for the current calendar year ({date.today().year}).",
         )
+
+    # credit_year: admins may credit hours to a prior year; members always use service_date year
+    credit_year = payload.service_date.year
+    if payload.credit_year is not None:
+        if not current_user.is_admin:
+            raise HTTPException(status_code=403, detail="Only admins can set a credit year")
+        if payload.credit_year > date.today().year:
+            raise HTTPException(status_code=400, detail="Credit year cannot be in the future")
+        credit_year = payload.credit_year
 
     project = db.get(Project, payload.project_id)
     if not project:
@@ -115,6 +126,7 @@ def submit_hours(
         project_id=payload.project_id,
         logged_by=current_user.user_id,
         service_date=payload.service_date,
+        credit_year=credit_year,
         hours=payload.hours,
         notes=payload.notes,
         status="approved" if auto_approve else "pending",
@@ -167,7 +179,7 @@ def list_hours(
         q = q.filter(Hour.member_id == member_id)
 
     if year:
-        q = q.filter(Hour.service_date.between(date(year, 1, 1), date(year, 12, 31)))
+        q = q.filter(Hour.credit_year == year)
     if status_filter:
         q = q.filter(Hour.status == status_filter)
 
@@ -181,6 +193,7 @@ def list_hours(
             "project_id":       h.project_id,
             "project_name":     h.project.name,
             "service_date":     h.service_date,
+            "credit_year":      h.credit_year,
             "hours":            float(h.hours),
             "notes":            h.notes,
             "status":           h.status,
@@ -205,6 +218,7 @@ def list_pending(
             "member_name":  f"{h.member.firstname} {h.member.lastname}",
             "project_name": h.project.name,
             "service_date": h.service_date,
+            "credit_year":  h.credit_year,
             "hours":        float(h.hours),
             "notes":        h.notes,
             "submitted_on": h.created,
@@ -284,7 +298,7 @@ def update_hours(
             raise HTTPException(status_code=400, detail="Only pending records can be edited")
 
     old_vals = {"project_id": hour.project_id, "service_date": str(hour.service_date),
-                "hours": float(hour.hours), "notes": hour.notes}
+                "credit_year": hour.credit_year, "hours": float(hour.hours), "notes": hour.notes}
 
     if payload.project_id is not None:
         project = db.get(Project, payload.project_id)
@@ -301,12 +315,19 @@ def update_hours(
                 status_code=400,
                 detail="Service date cannot be in the future.",
             )
-        if payload.service_date.year != date.today().year:
+        if not is_admin and payload.service_date.year != date.today().year:
             raise HTTPException(
                 status_code=400,
                 detail=f"Hours can only be logged for the current calendar year ({date.today().year}).",
             )
         hour.service_date = payload.service_date
+
+    if payload.credit_year is not None:
+        if not is_admin:
+            raise HTTPException(status_code=403, detail="Only admins can change the credit year")
+        if payload.credit_year > date.today().year:
+            raise HTTPException(status_code=400, detail="Credit year cannot be in the future")
+        hour.credit_year = payload.credit_year
 
     if payload.hours is not None:
         if payload.hours <= 0:
@@ -325,7 +346,7 @@ def update_hours(
             )
 
     new_vals = {"project_id": hour.project_id, "service_date": str(hour.service_date),
-                "hours": float(hour.hours), "notes": hour.notes}
+                "credit_year": hour.credit_year, "hours": float(hour.hours), "notes": hour.notes}
     member = hour.member
     summary = (f"Admin edited {hour.status} hours for {member.firstname} {member.lastname} (id={hour_id})"
                if is_admin else f"Edited pending hours (id={hour_id})")
@@ -338,6 +359,7 @@ def update_hours(
         "project_id":   hour.project_id,
         "project_name": hour.project.name,
         "service_date": hour.service_date,
+        "credit_year":  hour.credit_year,
         "hours":        float(hour.hours),
         "notes":        hour.notes,
         "detail":       "Hours updated",
