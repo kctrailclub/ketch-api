@@ -303,6 +303,30 @@ def send_reward_emails(
 # Reward Tags
 # ---------------------------------------------------------------------------
 
+@router.get("/rewards/tags")
+def get_reward_tags(
+    year: int = None,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_admin),
+):
+    """Return all reward tags, optionally filtered by year."""
+    q = db.query(RewardTag)
+    if year:
+        q = q.filter(RewardTag.year == year)
+    tags = q.order_by(RewardTag.year.desc(), RewardTag.tag_number).all()
+    return [
+        {
+            "household_id":     t.household_id,
+            "household_name":   t.household.name if t.household else None,
+            "year":             t.year,
+            "tag_number":       t.tag_number,
+            "assigned_by_name": f"{t.assigner.firstname} {t.assigner.lastname}" if t.assigner else None,
+            "assigned_at":      t.assigned_at.isoformat() if t.assigned_at else None,
+        }
+        for t in tags
+    ]
+
+
 class SaveTagRequest(BaseModel):
     household_id: int
     year:         int
