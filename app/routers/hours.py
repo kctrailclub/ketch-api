@@ -215,8 +215,8 @@ def list_hours(
             "status":           h.status,
             "status_note":      h.status_note,
             "created":          h.created,
-            "is_youth":         bool(h.member.youth),
-            "youth_credit_pct": h.project.youth_credit_pct,
+            "is_youth":          bool(h.member.youth),
+            "member_credit_pct": h.project.member_credit_pct,
         }
         for h in hours
     ]

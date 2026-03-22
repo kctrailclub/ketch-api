@@ -87,20 +87,15 @@ def get_reward_settings(
         .all()
     )
 
-    # Aggregate by household, applying youth credit per-project
+    # Aggregate by household, applying member credit per-project
     hh_hours = {}
-    hh_has_youth = {}
     for h in hour_records:
         user = h.member
         if not user or not user.household_id:
             continue
         hid = user.household_id
         raw = float(h.hours)
-        if user.youth:
-            credited = raw * (h.project.youth_credit_pct / 100)
-            hh_has_youth[hid] = True
-        else:
-            credited = raw
+        credited = raw * (h.project.member_credit_pct / 100)
         hh_hours[hid] = hh_hours.get(hid, 0) + credited
 
     qualified  = []  # >= threshold
@@ -129,7 +124,7 @@ def get_reward_settings(
             "firstname":      primary.firstname,
             "hours":          round(hours, 2),
             "remaining":      round(max(threshold - hours, 0), 2),
-            "has_youth_hours": hh_has_youth.get(hh_id, False),
+            "has_youth_hours": False,  # deprecated — kept for API compat
         }
 
         if hours >= threshold:
@@ -242,7 +237,7 @@ def send_reward_emails(
         if not user or not user.household_id:
             continue
         raw = float(h.hours)
-        credited = raw * (h.project.youth_credit_pct / 100) if user.youth else raw
+        credited = raw * (h.project.member_credit_pct / 100)
         hh_hours[user.household_id] = hh_hours.get(user.household_id, 0) + credited
 
     sent = 0

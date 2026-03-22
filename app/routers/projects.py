@@ -22,7 +22,7 @@ class CreateProjectRequest(BaseModel):
     notes:            Optional[str] = None
     project_type:     str = "ongoing"
     end_date:         Optional[date] = None
-    youth_credit_pct: Optional[int] = None
+    member_credit_pct: Optional[int] = None
     admin_only:       bool = False
 
 class UpdateProjectRequest(BaseModel):
@@ -30,7 +30,7 @@ class UpdateProjectRequest(BaseModel):
     notes:            Optional[str] = None
     project_type:     Optional[str] = None
     end_date:         Optional[date] = None
-    youth_credit_pct: Optional[int] = None
+    member_credit_pct: Optional[int] = None
     admin_only:       Optional[bool] = None
 
 
@@ -64,7 +64,7 @@ def list_projects(
             "notes":            p.notes,
             "project_type":     p.project_type,
             "end_date":         p.end_date,
-            "youth_credit_pct": p.youth_credit_pct,
+            "member_credit_pct": p.member_credit_pct,
             "admin_only":       bool(p.admin_only),
         }
         for p in projects
@@ -82,14 +82,14 @@ def create_project(
     if payload.project_type == "one_time" and not payload.end_date:
         raise HTTPException(status_code=400, detail="end_date is required for one_time projects")
 
-    youth_pct = max(0, min(100, payload.youth_credit_pct)) if payload.youth_credit_pct is not None else 50
+    youth_pct = max(0, min(100, payload.member_credit_pct)) if payload.member_credit_pct is not None else 100
 
     project = Project(
         name=payload.name,
         notes=payload.notes,
         project_type=payload.project_type,
         end_date=payload.end_date,
-        youth_credit_pct=youth_pct,
+        member_credit_pct=youth_pct,
         admin_only=int(payload.admin_only),
     )
     db.add(project)
@@ -116,7 +116,7 @@ def update_project(
     if payload.notes            is not None: project.notes            = payload.notes
     if payload.project_type     is not None: project.project_type     = payload.project_type
     if payload.end_date         is not None: project.end_date         = payload.end_date
-    if payload.youth_credit_pct is not None: project.youth_credit_pct = max(0, min(100, payload.youth_credit_pct))
+    if payload.member_credit_pct is not None: project.member_credit_pct = max(0, min(100, payload.member_credit_pct))
     if payload.admin_only       is not None: project.admin_only       = int(payload.admin_only)
 
     log_action(db, user_id=_admin.user_id, action="update", entity_type="project", entity_id=project_id,
