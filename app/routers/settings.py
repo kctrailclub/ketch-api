@@ -8,9 +8,9 @@ from app.core.audit import log_action
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_raw_email
-from app.models.models import Hour, Project, User, Household, Setting, RewardEmail
+from app.models.models import Hour, Project, User, Household, Setting, RewardEmail, RewardTag
 from sqlalchemy import func, desc
-from datetime import date
+from datetime import date, datetime
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -161,8 +161,24 @@ def get_reward_settings(
                 "sent_at": s.sent_at.isoformat() if s.sent_at else None,
             }
 
+    # Fetch tag assignments for current year
+    tags = db.query(RewardTag).filter(RewardTag.year == current_year).all()
+    tag_map = {}
+    for t in tags:
+        assigner_name = None
+        if t.assigned_by:
+            assigner = db.get(User, t.assigned_by)
+            if assigner:
+                assigner_name = f"{assigner.firstname} {assigner.lastname}"
+        tag_map[t.household_id] = {
+            "tag_number": t.tag_number,
+            "assigned_by_name": assigner_name,
+            "assigned_at": t.assigned_at.isoformat() if t.assigned_at else None,
+        }
+
     for entry in qualified:
         entry["last_sent"] = send_map.get((entry["household_id"], "reward"))
+        entry["tag"] = tag_map.get(entry["household_id"])
     for entry in close:
         entry["last_sent"] = send_map.get((entry["household_id"], "nudge"))
 
@@ -281,3 +297,46 @@ def send_reward_emails(
         "errors": errors,
         "detail": f"{sent} email{'s' if sent != 1 else ''} sent",
     }
+
+
+# ---------------------------------------------------------------------------
+# Reward Tags
+# ---------------------------------------------------------------------------
+
+class SaveTagRequest(BaseModel):
+    household_id: int
+    year:         int
+    tag_number:   int
+
+
+@router.post("/rewards/tag")
+def save_reward_tag(
+    payload: SaveTagRequest,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_admin),
+):
+    # Upsert: one tag per household per year
+    existing = (
+        db.query(RewardTag)
+        .filter(RewardTag.household_id == payload.household_id, RewardTag.year == payload.year)
+        .first()
+    )
+    if existing:
+        existing.tag_number  = payload.tag_number
+        existing.assigned_by = _admin.user_id
+        existing.assigned_at = datetime.utcnow()
+    else:
+        db.add(RewardTag(
+            household_id=payload.household_id,
+            year=payload.year,
+            tag_number=payload.tag_number,
+            assigned_by=_admin.user_id,
+        ))
+
+    hh = db.get(Household, payload.household_id)
+    hh_name = hh.name if hh else f"ID {payload.household_id}"
+    log_action(db, user_id=_admin.user_id, action="assign_tag", entity_type="reward_tag",
+        details={"summary": f"Assigned tag #{payload.tag_number} to {hh_name} for {payload.year}",
+                 "household_id": payload.household_id, "tag_number": payload.tag_number, "year": payload.year})
+    db.commit()
+    return {"detail": f"Tag #{payload.tag_number} assigned to {hh_name} for {payload.year}"}

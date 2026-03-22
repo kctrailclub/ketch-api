@@ -10,7 +10,7 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_admin
 from app.core.email import send_invite_email
 from app.core.audit import log_action
-from app.models.models import RegistrationRequest, User
+from app.models.models import Household, RegistrationRequest, User
 
 router = APIRouter(prefix="/registrations", tags=["registrations"])
 
@@ -122,6 +122,16 @@ def approve_registration(
     token   = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(hours=settings.invite_token_expire_hours)
 
+    # Auto-create a household for the new member
+    last_hh = db.query(Household).order_by(Household.household_id.desc()).first()
+    next_hh_id = (last_hh.household_id + 1) if last_hh else 1
+    hh = Household(household_code=f"HH-{next_hh_id:04d}", name=reg.lastname)
+    db.add(hh)
+    db.flush()
+    log_action(db, user_id=admin.user_id, action="auto_create", entity_type="household",
+        entity_id=hh.household_id,
+        details={"summary": f"Auto-created household '{reg.lastname}' for registration approval"})
+
     user = User(
         firstname=reg.firstname,
         lastname=reg.lastname,
@@ -130,6 +140,7 @@ def approve_registration(
         password_hash="",
         is_admin=0,
         is_active=1,
+        household_id=hh.household_id,
         invite_token=token,
         invite_expires=expires,
     )

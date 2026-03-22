@@ -165,6 +165,20 @@ class RewardEmail(Base):
     sender          = relationship("User", foreign_keys=[sent_by])
 
 
+class RewardTag(Base):
+    __tablename__ = "reward_tags"
+
+    reward_tag_id = Column(Integer, primary_key=True, autoincrement=True)
+    household_id  = Column(Integer, ForeignKey("households.household_id", ondelete="CASCADE"), nullable=False)
+    year          = Column(Integer, nullable=False)
+    tag_number    = Column(Integer, nullable=False)
+    assigned_by   = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    assigned_at   = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    household     = relationship("Household", foreign_keys=[household_id])
+    assigner      = relationship("User", foreign_keys=[assigned_by])
+
+
 class ResourceSponsor(Base):
     __tablename__ = "resource_sponsors"
 

@@ -12,11 +12,27 @@ from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_invite_email
 from app.core.audit import log_action
-from app.models.models import RefreshToken, User
+from app.models.models import Household, RefreshToken, User
 
 log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/users", tags=["users"])
+
+
+def _auto_create_household(db: Session, lastname: str, admin_user_id: int) -> int:
+    """Create a household for a user who doesn't have one. Returns household_id."""
+    # Generate next household code
+    last = db.query(Household).order_by(Household.household_id.desc()).first()
+    next_id = (last.household_id + 1) if last else 1
+    code = f"HH-{next_id:04d}"
+
+    hh = Household(household_code=code, name=lastname)
+    db.add(hh)
+    db.flush()
+    log_action(db, user_id=admin_user_id, action="auto_create", entity_type="household",
+        entity_id=hh.household_id,
+        details={"summary": f"Auto-created household '{lastname}' for new member"})
+    return hh.household_id
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +73,11 @@ def create_user(
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
+    # Auto-create a household if none provided
+    household_id = payload.household_id
+    if not household_id:
+        household_id = _auto_create_household(db, payload.lastname, _admin.user_id)
+
     token = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(hours=settings.invite_token_expire_hours)
 
@@ -69,7 +90,7 @@ def create_user(
         is_admin=int(payload.is_admin),
         is_active=0,               # inactive until they set a password
         youth=int(payload.youth),
-        household_id=payload.household_id,
+        household_id=household_id,
         invite_token=token,
         invite_expires=expires,
     )
