@@ -60,6 +60,7 @@ class Project(Base):
     project_type = Column(Enum("one_time", "ongoing"), nullable=False, default="ongoing")
     end_date         = Column(Date, nullable=True)
     youth_credit_pct = Column(Integer, nullable=False, default=50)
+    admin_only       = Column(Integer, nullable=False, default=0)
     created          = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated          = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 

@@ -23,6 +23,7 @@ class CreateProjectRequest(BaseModel):
     project_type:     str = "ongoing"
     end_date:         Optional[date] = None
     youth_credit_pct: Optional[int] = None
+    admin_only:       bool = False
 
 class UpdateProjectRequest(BaseModel):
     name:             Optional[str] = None
@@ -30,6 +31,7 @@ class UpdateProjectRequest(BaseModel):
     project_type:     Optional[str] = None
     end_date:         Optional[date] = None
     youth_credit_pct: Optional[int] = None
+    admin_only:       Optional[bool] = None
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +53,9 @@ def list_projects(
                 (Project.end_date == None) | (Project.end_date >= today)
             ))
         )
+        # Regular users cannot see admin-only projects when selecting for hours
+        if not _user.is_admin:
+            q = q.filter(Project.admin_only == 0)
     projects = q.order_by(Project.name).all()
     return [
         {
@@ -60,6 +65,7 @@ def list_projects(
             "project_type":     p.project_type,
             "end_date":         p.end_date,
             "youth_credit_pct": p.youth_credit_pct,
+            "admin_only":       bool(p.admin_only),
         }
         for p in projects
     ]
@@ -84,6 +90,7 @@ def create_project(
         project_type=payload.project_type,
         end_date=payload.end_date,
         youth_credit_pct=youth_pct,
+        admin_only=int(payload.admin_only),
     )
     db.add(project)
     db.flush()
@@ -110,6 +117,7 @@ def update_project(
     if payload.project_type     is not None: project.project_type     = payload.project_type
     if payload.end_date         is not None: project.end_date         = payload.end_date
     if payload.youth_credit_pct is not None: project.youth_credit_pct = max(0, min(100, payload.youth_credit_pct))
+    if payload.admin_only       is not None: project.admin_only       = int(payload.admin_only)
 
     log_action(db, user_id=_admin.user_id, action="update", entity_type="project", entity_id=project_id,
         details={"summary": f"Updated project '{project.name}'"})
