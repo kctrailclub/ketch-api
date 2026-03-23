@@ -207,7 +207,7 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
             logging.getLogger(__name__).error("Password reset email failed for %s: %s", user.email, exc)
             raise HTTPException(
                 status_code=502,
-                detail="Unable to send the reset email right now. Please try again later or contact info@kctrailclub.org for help.",
+                detail="Unable to send the reset email right now. Please try again later or contact membership@kctrailclub.org for help.",
             ) from exc
 
     return {"detail": "If that email is registered you will receive a reset link shortly"}
