@@ -232,6 +232,7 @@ def list_pending(
         {
             "hour_id":      h.hour_id,
             "member_name":  f"{h.member.firstname} {h.member.lastname}",
+            "project_id":   h.project_id,
             "project_name": h.project.name,
             "service_date": h.service_date,
             "credit_year":  h.credit_year,
