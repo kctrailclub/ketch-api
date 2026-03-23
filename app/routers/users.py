@@ -1,7 +1,7 @@
 import logging
 import secrets
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
@@ -48,6 +48,8 @@ class CreateUserRequest(BaseModel):
     youth:        bool = False
     household_id: Optional[int] = None
 
+_UNSET = object()
+
 class UpdateUserRequest(BaseModel):
     firstname:    Optional[str] = None
     lastname:     Optional[str] = None
@@ -56,8 +58,11 @@ class UpdateUserRequest(BaseModel):
     is_admin:     Optional[bool] = None
     is_active:    Optional[bool] = None
     youth:        Optional[bool] = None
-    household_id: Optional[int] = None
+    household_id: Union[int, None] = _UNSET  # distinguish "not sent" from "set to null"
     new_password: Optional[str] = None
+
+    class Config:
+        arbitrary_types_allowed = True
 
 
 # ---------------------------------------------------------------------------
@@ -180,10 +185,12 @@ def update_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     changes = {}
-    for field in ("firstname", "lastname", "email", "phone", "is_admin", "is_active", "youth", "household_id"):
+    for field in ("firstname", "lastname", "email", "phone", "is_admin", "is_active", "youth"):
         new_val = getattr(payload, field)
         if new_val is not None and str(new_val) != str(getattr(user, field)):
             changes[field] = {"old": getattr(user, field), "new": new_val}
+    if payload.household_id is not _UNSET and payload.household_id != user.household_id:
+        changes["household_id"] = {"old": user.household_id, "new": payload.household_id}
 
     if payload.firstname    is not None: user.firstname    = payload.firstname
     if payload.lastname     is not None: user.lastname     = payload.lastname
@@ -195,7 +202,7 @@ def update_user(
         if not payload.is_active:
             db.query(RefreshToken).filter(RefreshToken.user_id == user_id).delete()
     if payload.youth        is not None: user.youth        = int(payload.youth)
-    if payload.household_id is not None: user.household_id = payload.household_id
+    if payload.household_id is not _UNSET: user.household_id = payload.household_id
     if payload.new_password:
         if len(payload.new_password) < 8:
             raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
