@@ -81,6 +81,8 @@ def create_project(
         raise HTTPException(status_code=400, detail="project_type must be 'ongoing' or 'one_time'")
     if payload.project_type == "one_time" and not payload.end_date:
         raise HTTPException(status_code=400, detail="end_date is required for one_time projects")
+    if payload.project_type == "ongoing" and payload.end_date:
+        raise HTTPException(status_code=400, detail="Ongoing projects cannot have an end date")
 
     youth_pct = max(0, min(100, payload.member_credit_pct)) if payload.member_credit_pct is not None else 100
 
@@ -112,12 +114,22 @@ def update_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    if payload.name             is not None: project.name             = payload.name
-    if payload.notes            is not None: project.notes            = payload.notes
-    if payload.project_type     is not None: project.project_type     = payload.project_type
-    if payload.end_date         is not None: project.end_date         = payload.end_date
-    if payload.member_credit_pct is not None: project.member_credit_pct = max(0, min(100, payload.member_credit_pct))
-    if payload.admin_only       is not None: project.admin_only       = int(payload.admin_only)
+    # Parse raw body to detect explicitly-sent keys (including null values)
+    raw = payload.model_dump(exclude_unset=True)
+    if "name"             in raw: project.name             = raw["name"]
+    if "notes"            in raw: project.notes            = raw["notes"]
+    if "project_type"     in raw: project.project_type     = raw["project_type"]
+    if "end_date"         in raw: project.end_date         = raw["end_date"]
+
+    # Enforce type/end_date consistency
+    if project.project_type == "one_time" and not project.end_date:
+        raise HTTPException(status_code=400, detail="end_date is required for one_time projects")
+    if project.project_type == "ongoing" and project.end_date:
+        raise HTTPException(status_code=400, detail="Ongoing projects cannot have an end date")
+    if "member_credit_pct" in raw and raw["member_credit_pct"] is not None:
+        project.member_credit_pct = max(0, min(100, raw["member_credit_pct"]))
+    if "admin_only" in raw and raw["admin_only"] is not None:
+        project.admin_only = int(raw["admin_only"])
 
     log_action(db, user_id=_admin.user_id, action="update", entity_type="project", entity_id=project_id,
         details={"summary": f"Updated project '{project.name}'"})
