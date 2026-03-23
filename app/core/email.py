@@ -165,6 +165,22 @@ def send_hours_approved_email(to: str, firstname: str, hours: float, project_nam
     _send(to, f"Hours approved — {settings.app_name}", html)
 
 
+def send_hours_removed_email(to: str, firstname: str, hours: float, project_name: str, service_date: str, reason: str | None = None) -> None:
+    safe_name = html_mod.escape(firstname)
+    safe_project = html_mod.escape(project_name)
+    reason_line = ""
+    if reason:
+        safe_reason = html_mod.escape(reason)
+        reason_line = f"<p><strong>Reason:</strong> {safe_reason}</p>"
+    html = f"""
+    <p>Hi {safe_name},</p>
+    <p>Your <strong>{hours}h</strong> for <strong>{safe_project}</strong> (service date: {service_date}) has been <strong>removed</strong> by an administrator.</p>
+    {reason_line}
+    <p>If you have questions, please contact <a href="mailto:membership@kctrailclub.org">membership@kctrailclub.org</a>.</p>
+    """
+    _send(to, f"Hours removed — {settings.app_name}", html)
+
+
 def send_password_reset_email(to: str, firstname: str, token: str) -> None:
     safe_name = html_mod.escape(firstname)
     link = f"{settings.frontend_url}/set-password?token={token}"

@@ -11,7 +11,7 @@ import logging
 from app.core.audit import log_action
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
-from app.core.email import send_hours_logged_email, send_hours_approved_email
+from app.core.email import send_hours_logged_email, send_hours_approved_email, send_hours_removed_email
 from app.models.models import Hour, Notification, Project, User
 
 log = logging.getLogger(__name__)
@@ -403,9 +403,14 @@ def update_hours(
     }
 
 
+class DeleteHoursRequest(BaseModel):
+    reason: Optional[str] = None
+
+
 @router.delete("/{hour_id}")
 def delete_hours(
     hour_id: int,
+    payload: Optional[DeleteHoursRequest] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -420,9 +425,28 @@ def delete_hours(
         if hour.status != "pending":
             raise HTTPException(status_code=400, detail="Only pending records can be deleted")
 
+    reason = payload.reason if payload else None
+    member = db.get(User, hour.member_id)
+    project = db.get(Project, hour.project_id)
+    project_name = project.name if project else "Unknown"
+    service_date = str(hour.service_date)
+    hours_val = float(hour.hours)
+
     log_action(db, user_id=current_user.user_id, action="delete", entity_type="hour", entity_id=hour_id,
-        details={"summary": f"Deleted hour record #{hour_id} ({float(hour.hours)}h)",
-                 "member_id": hour.member_id, "project_id": hour.project_id, "hours": float(hour.hours)})
+        details={"summary": f"Deleted hour record #{hour_id} ({hours_val}h)",
+                 "member_id": hour.member_id, "project_id": hour.project_id,
+                 "hours": hours_val, "reason": reason})
     db.delete(hour)
     db.commit()
+
+    # Notify member if admin deleted their approved hours
+    if current_user.is_admin and member and member.email:
+        try:
+            send_hours_removed_email(
+                member.email, member.firstname,
+                hours_val, project_name, service_date, reason,
+            )
+        except Exception as exc:
+            log.error("Failed to send hours-removed email to %s: %s", member.email, exc)
+
     return {"detail": "Hour record deleted"}
