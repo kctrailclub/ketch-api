@@ -211,6 +211,53 @@ def update_user(
     return {"detail": "User updated"}
 
 
+@router.post("/bulk-households")
+def bulk_create_households(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_admin),
+):
+    """Create households for all users who don't have one.
+    Groups users by lastname so family members share a household."""
+    orphans = db.query(User).filter(User.household_id.is_(None)).all()
+    if not orphans:
+        return {"created": 0, "assigned": 0, "detail": "All users already have households."}
+
+    # Group by lastname
+    by_name: dict[str, list] = {}
+    for u in orphans:
+        by_name.setdefault(u.lastname, []).append(u)
+
+    # Get max household_id for code generation
+    last = db.query(Household).order_by(Household.household_id.desc()).first()
+    next_id = (last.household_id + 1) if last else 1
+
+    created = 0
+    assigned = 0
+    for lastname, members in by_name.items():
+        code = f"HH-{next_id:04d}"
+        hh = Household(household_code=code, name=lastname)
+        db.add(hh)
+        db.flush()
+        next_id = hh.household_id + 1
+
+        for u in members:
+            u.household_id = hh.household_id
+            assigned += 1
+
+        log_action(db, user_id=_admin.user_id, action="bulk_create", entity_type="household",
+            entity_id=hh.household_id,
+            details={"summary": f"Bulk-created household '{lastname}' for {len(members)} member(s)",
+                     "members": [f"{u.firstname} {u.lastname}" for u in members]})
+        created += 1
+
+    db.commit()
+    return {
+        "created": created,
+        "assigned": assigned,
+        "detail": f"Created {created} household(s) and assigned {assigned} member(s).",
+    }
+
+
 @router.post("/{user_id}/resend-invite")
 def resend_invite(
     user_id: int,
