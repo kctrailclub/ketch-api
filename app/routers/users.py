@@ -5,7 +5,7 @@ from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, EmailStr
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import settings
 from app.core.database import get_db
@@ -124,7 +124,7 @@ def list_users(
     db: Session = Depends(get_db),
     _admin: User = Depends(get_current_admin),
 ):
-    users = db.query(User).order_by(User.lastname, User.firstname).all()
+    users = db.query(User).options(joinedload(User.household)).order_by(User.lastname, User.firstname).all()
     return [
         {
             "user_id":        u.user_id,
