@@ -46,7 +46,9 @@ class CreateUserRequest(BaseModel):
     phone:        str = ""
     is_admin:     bool = False
     youth:        bool = False
-    household_id: Optional[int] = None
+    household_id: Optional[int] = None       # existing household
+    create_household: Optional[bool] = False  # explicitly create new
+    # If household_id is set → use it; if create_household → auto-create; else → no household
 
 _UNSET = object()
 
@@ -78,9 +80,9 @@ def create_user(
     if db.query(User).filter(User.email == payload.email).first():
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    # Auto-create a household if none provided
+    # Household assignment: explicit ID, create new, or none
     household_id = payload.household_id
-    if not household_id:
+    if not household_id and payload.create_household:
         household_id = _auto_create_household(db, payload.lastname, _admin.user_id)
 
     token = secrets.token_urlsafe(32)

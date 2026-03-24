@@ -108,9 +108,15 @@ def list_registrations(
     ]
 
 
+class ApproveRequest(BaseModel):
+    household_id: int | None = None        # existing household
+    create_household: bool = False          # explicitly create new
+
+
 @router.post("/{request_id}/approve")
 def approve_registration(
     request_id: int,
+    body: ApproveRequest = ApproveRequest(),
     db: Session = Depends(get_db),
     admin: User = Depends(get_current_admin),
 ):
@@ -128,15 +134,18 @@ def approve_registration(
     token   = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(hours=settings.invite_token_expire_hours)
 
-    # Auto-create a household for the new member
-    last_hh = db.query(Household).order_by(Household.household_id.desc()).first()
-    next_hh_id = (last_hh.household_id + 1) if last_hh else 1
-    hh = Household(household_code=f"HH-{next_hh_id:04d}", name=reg.lastname)
-    db.add(hh)
-    db.flush()
-    log_action(db, user_id=admin.user_id, action="auto_create", entity_type="household",
-        entity_id=hh.household_id,
-        details={"summary": f"Auto-created household '{reg.lastname}' for registration approval"})
+    # Household assignment: existing, create new, or none
+    household_id = body.household_id
+    if not household_id and body.create_household:
+        last_hh = db.query(Household).order_by(Household.household_id.desc()).first()
+        next_hh_id = (last_hh.household_id + 1) if last_hh else 1
+        hh = Household(household_code=f"HH-{next_hh_id:04d}", name=reg.lastname)
+        db.add(hh)
+        db.flush()
+        log_action(db, user_id=admin.user_id, action="auto_create", entity_type="household",
+            entity_id=hh.household_id,
+            details={"summary": f"Auto-created household '{reg.lastname}' for registration approval"})
+        household_id = hh.household_id
 
     user = User(
         firstname=reg.firstname,
@@ -146,7 +155,7 @@ def approve_registration(
         password_hash="",
         is_admin=0,
         is_active=1,
-        household_id=hh.household_id,
+        household_id=household_id,
         invite_token=token,
         invite_expires=expires,
     )
