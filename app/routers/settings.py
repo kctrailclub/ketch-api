@@ -177,6 +177,21 @@ def get_reward_settings(
     for entry in close:
         entry["last_sent"] = send_map.get((entry["household_id"], "nudge"))
 
+    # Tag range info
+    tag_range_year = get_setting(db, "tag_range_year")
+    tag_info = None
+    if tag_range_year and int(tag_range_year) == current_year:
+        start = int(get_setting(db, "tag_range_start") or 0)
+        end   = int(get_setting(db, "tag_range_end") or 0)
+        assigned_count = db.query(RewardTag).filter(RewardTag.year == current_year).count()
+        tag_info = {
+            "start": start,
+            "end": end,
+            "total": end - start + 1 if end >= start else 0,
+            "assigned": assigned_count,
+            "remaining": (end - start + 1) - assigned_count if end >= start else 0,
+        }
+
     return {
         "threshold":            threshold,
         "reward_email_subject": get_setting(db, "reward_email_subject"),
@@ -186,6 +201,7 @@ def get_reward_settings(
         "qualified":            qualified,
         "close":                close,
         "year":                 current_year,
+        "tag_info":             tag_info,
     }
 
 
@@ -359,3 +375,121 @@ def save_reward_tag(
                  "household_id": payload.household_id, "tag_number": payload.tag_number, "year": payload.year})
     db.commit()
     return {"detail": f"Tag #{payload.tag_number} assigned to {hh_name} for {payload.year}"}
+
+
+# ---------------------------------------------------------------------------
+# Auto-assign tags
+# ---------------------------------------------------------------------------
+
+class AutoAssignRequest(BaseModel):
+    start_tag: int
+    end_tag:   int
+
+
+@router.post("/rewards/auto-assign-tags")
+def auto_assign_tags(
+    payload: AutoAssignRequest,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_admin),
+):
+    """
+    Bulk-assign tag numbers to eligible households in order of the date
+    each household first reached the reward threshold.
+    """
+    if payload.start_tag > payload.end_tag:
+        raise HTTPException(status_code=400, detail="Start tag must be ≤ end tag")
+    if payload.start_tag < 1:
+        raise HTTPException(status_code=400, detail="Tag numbers must be positive")
+
+    threshold = int(get_setting(db, "reward_threshold") or 10)
+    current_year = date.today().year
+
+    # Fetch all approved hours for this credit year, ordered by service_date
+    hour_records = (
+        db.query(Hour)
+        .filter(Hour.status == "approved", Hour.credit_year == current_year)
+        .order_by(Hour.service_date)
+        .all()
+    )
+
+    # Running cumulative credited hours per household; track when threshold crossed
+    hh_cumulative = {}   # hh_id -> running total
+    hh_threshold_date = {}  # hh_id -> date they first hit threshold
+
+    for h in hour_records:
+        user = h.member
+        if not user or not user.household_id:
+            continue
+        hid = user.household_id
+        credited = float(h.hours) * (h.project.member_credit_pct / 100)
+        hh_cumulative[hid] = hh_cumulative.get(hid, 0) + credited
+        if hid not in hh_threshold_date and hh_cumulative[hid] >= threshold:
+            hh_threshold_date[hid] = h.service_date
+
+    # Sort eligible households by the date they hit threshold (earliest first)
+    eligible = sorted(hh_threshold_date.items(), key=lambda x: x[1])
+
+    total_tags = payload.end_tag - payload.start_tag + 1
+    assigned = 0
+    assignments = []
+
+    for i, (hh_id, threshold_date) in enumerate(eligible):
+        if assigned >= total_tags:
+            break
+        tag_number = payload.start_tag + i
+
+        # Upsert tag
+        existing = (
+            db.query(RewardTag)
+            .filter(RewardTag.household_id == hh_id, RewardTag.year == current_year)
+            .first()
+        )
+        hh = db.get(Household, hh_id)
+        hh_name = hh.name if hh else f"ID {hh_id}"
+
+        if existing:
+            existing.tag_number = tag_number
+            existing.assigned_by = _admin.user_id
+            existing.assigned_at = datetime.utcnow()
+        else:
+            db.add(RewardTag(
+                household_id=hh_id,
+                year=current_year,
+                tag_number=tag_number,
+                assigned_by=_admin.user_id,
+            ))
+
+        assignments.append({
+            "household_id": hh_id,
+            "household_name": hh_name,
+            "tag_number": tag_number,
+            "threshold_date": str(threshold_date),
+        })
+        assigned += 1
+
+    tags_remaining = total_tags - assigned
+    unassigned_households = len(eligible) - assigned
+
+    # Store tag range info in settings for reference
+    set_setting(db, "tag_range_start", str(payload.start_tag))
+    set_setting(db, "tag_range_end", str(payload.end_tag))
+    set_setting(db, "tag_range_year", str(current_year))
+    set_setting(db, "tags_assigned", str(assigned))
+
+    log_action(db, user_id=_admin.user_id, action="auto_assign_tags", entity_type="reward_tag",
+        details={
+            "summary": f"Auto-assigned tags #{payload.start_tag}–#{payload.start_tag + assigned - 1} to {assigned} households for {current_year}",
+            "start_tag": payload.start_tag, "end_tag": payload.end_tag,
+            "assigned": assigned, "tags_remaining": tags_remaining,
+        })
+    db.commit()
+
+    return {
+        "detail": f"Assigned {assigned} tags (#{payload.start_tag}–#{payload.start_tag + assigned - 1 if assigned else payload.start_tag})",
+        "assigned": assigned,
+        "tags_remaining": tags_remaining,
+        "unassigned_households": unassigned_households,
+        "total_eligible": len(eligible),
+        "total_tags": total_tags,
+        "assignments": assignments,
+    }
