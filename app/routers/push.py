@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import get_current_user
+from app.core.push import send_push_to_user
 from app.models.models import PushSubscription, User
 
 router = APIRouter(prefix="/push", tags=["push"])
@@ -53,6 +54,23 @@ def subscribe(
         ))
     db.commit()
     return {"detail": "Subscribed"}
+
+
+@router.post("/test")
+def test_push(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    subs = db.query(PushSubscription).filter(PushSubscription.user_id == current_user.user_id).count()
+    if subs == 0:
+        raise HTTPException(status_code=400, detail="No push subscriptions found for your account. Make sure you allowed notifications.")
+    sent = send_push_to_user(
+        db, current_user.user_id,
+        "Test Notification",
+        "Push notifications are working!",
+        f"{settings.frontend_url}/dashboard",
+    )
+    return {"detail": f"Sent to {sent} of {subs} device(s)"}
 
 
 @router.post("/unsubscribe")
