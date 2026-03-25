@@ -8,10 +8,12 @@ from sqlalchemy.orm import Session
 
 import logging
 
+from app.core.config import settings
 from app.core.audit import log_action
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin, get_current_user
 from app.core.email import send_hours_logged_email, send_hours_approved_email, send_hours_removed_email
+from app.core.push import send_push_to_user
 from app.models.models import Hour, Notification, Project, User
 
 log = logging.getLogger(__name__)
@@ -163,6 +165,13 @@ def submit_hours(
             )
         except Exception as exc:
             log.error("Failed to send hours-logged email to %s: %s", member.email, exc)
+        try:
+            send_push_to_user(db, payload.member_id,
+                "Hours Logged",
+                f"{payload.hours}h logged for {project.name} on {payload.service_date}",
+                f"{settings.frontend_url}/hours")
+        except Exception as exc:
+            log.error("Push failed for user %s: %s", payload.member_id, exc)
 
     detail = "Hours approved" if auto_approve else "Hours submitted and pending approval"
     return {"hour_id": hour.hour_id, "detail": detail}
@@ -279,6 +288,13 @@ def review_hours(
             )
         except Exception as exc:
             log.error("Failed to send hours-approved email to %s: %s", hour.member.email, exc)
+        try:
+            send_push_to_user(db, hour.member_id,
+                "Hours Approved",
+                f"{float(hour.hours)}h for {hour.project.name} approved!",
+                f"{settings.frontend_url}/hours")
+        except Exception as exc:
+            log.error("Push failed for user %s: %s", hour.member_id, exc)
 
     return {"detail": f"Hours {payload.status}"}
 
@@ -298,18 +314,25 @@ def approve_all_hours(
         hour.status = "approved"
         hour.status_updated = datetime.now(timezone.utc)
         hour.status_by = current_admin.user_id
-        notify_list.append((hour.member.email, hour.member.firstname, float(hour.hours), hour.project.name, str(hour.service_date)))
+        notify_list.append((hour.member_id, hour.member.email, hour.member.firstname, float(hour.hours), hour.project.name, str(hour.service_date)))
         count += 1
 
     log_action(db, user_id=current_admin.user_id, action="approve_all", entity_type="hour",
         details={"summary": f"Bulk approved {count} pending hour records", "count": count})
     db.commit()
 
-    for email, firstname, hours, project_name, service_date in notify_list:
+    for member_id, email, firstname, hours, project_name, service_date in notify_list:
         try:
             send_hours_approved_email(email, firstname, hours, project_name, service_date)
         except Exception as exc:
             log.error("Failed to send hours-approved email to %s: %s", email, exc)
+        try:
+            send_push_to_user(db, member_id,
+                "Hours Approved",
+                f"{hours}h for {project_name} approved!",
+                f"{settings.frontend_url}/hours")
+        except Exception as exc:
+            log.error("Push failed for user %s: %s", member_id, exc)
 
     return {"detail": f"{count} hour record{'s' if count != 1 else ''} approved"}
 

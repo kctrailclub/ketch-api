@@ -179,6 +179,19 @@ class RewardTag(Base):
     assigner      = relationship("User", foreign_keys=[assigned_by])
 
 
+class PushSubscription(Base):
+    __tablename__ = "push_subscriptions"
+
+    subscription_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id         = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, index=True)
+    endpoint        = Column(Text, nullable=False)
+    p256dh          = Column(String(255), nullable=False)
+    auth            = Column(String(255), nullable=False)
+    created         = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    user            = relationship("User", foreign_keys=[user_id])
+
+
 class ResourceSponsor(Base):
     __tablename__ = "resource_sponsors"
 

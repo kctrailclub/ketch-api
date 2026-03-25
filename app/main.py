@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.routers import audit, auth, households, hours, nl_query, notifications, projects, resources, users, registrations
+from app.routers import audit, auth, households, hours, nl_query, notifications, projects, push, resources, users, registrations
 from app.routers import settings as settings_router
 
 app = FastAPI(
@@ -37,6 +37,7 @@ app.include_router(settings_router.router)
 app.include_router(registrations.router)
 app.include_router(nl_query.router)
 app.include_router(audit.router)
+app.include_router(push.router)
 app.include_router(resources.router)
 
 

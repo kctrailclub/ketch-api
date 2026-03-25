@@ -30,6 +30,10 @@ class Settings(BaseSettings):
     app_name: str = "KCTC Volunteer Hours"
     frontend_url: str
 
+    # Push notifications (VAPID)
+    vapid_private_key: str | None = None
+    vapid_public_key: str | None = None
+
     # Anthropic (for natural language query)
     anthropic_api_key: str | None = None
 
