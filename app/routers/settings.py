@@ -158,8 +158,9 @@ def get_reward_settings(
                 "sent_at": s.sent_at.isoformat() if s.sent_at else None,
             }
 
-    # Fetch tag assignments for current year
-    tags = db.query(RewardTag).filter(RewardTag.year == current_year).all()
+    # Fetch tag assignments — tags earned in credit_year are valid for credit_year+1
+    tag_year = current_year + 1
+    tags = db.query(RewardTag).filter(RewardTag.year == tag_year).all()
     tag_map = {}
     for t in tags:
         assigner_name = None
@@ -182,10 +183,10 @@ def get_reward_settings(
     # Tag range info
     tag_range_year = get_setting(db, "tag_range_year")
     tag_info = None
-    if tag_range_year and int(tag_range_year) == current_year:
+    if tag_range_year and int(tag_range_year) == tag_year:
         start = int(get_setting(db, "tag_range_start") or 0)
         end   = int(get_setting(db, "tag_range_end") or 0)
-        assigned_count = db.query(RewardTag).filter(RewardTag.year == current_year).count()
+        assigned_count = db.query(RewardTag).filter(RewardTag.year == tag_year).count()
         tag_info = {
             "start": start,
             "end": end,
@@ -432,6 +433,9 @@ def auto_assign_tags(
     # Sort eligible households by the date they hit threshold (earliest first)
     eligible = sorted(hh_threshold_date.items(), key=lambda x: x[1])
 
+    # Tags earned in credit_year are valid for the following year
+    tag_year = current_year + 1
+
     total_tags = payload.end_tag - payload.start_tag + 1
     assigned = 0
     assignments = []
@@ -444,7 +448,7 @@ def auto_assign_tags(
         # Upsert tag
         existing = (
             db.query(RewardTag)
-            .filter(RewardTag.household_id == hh_id, RewardTag.year == current_year)
+            .filter(RewardTag.household_id == hh_id, RewardTag.year == tag_year)
             .first()
         )
         hh = db.get(Household, hh_id)
@@ -457,7 +461,7 @@ def auto_assign_tags(
         else:
             db.add(RewardTag(
                 household_id=hh_id,
-                year=current_year,
+                year=tag_year,
                 tag_number=tag_number,
                 assigned_by=_admin.user_id,
             ))
@@ -476,12 +480,12 @@ def auto_assign_tags(
     # Store tag range info in settings for reference
     set_setting(db, "tag_range_start", str(payload.start_tag))
     set_setting(db, "tag_range_end", str(payload.end_tag))
-    set_setting(db, "tag_range_year", str(current_year))
+    set_setting(db, "tag_range_year", str(tag_year))
     set_setting(db, "tags_assigned", str(assigned))
 
     log_action(db, user_id=_admin.user_id, action="auto_assign_tags", entity_type="reward_tag",
         details={
-            "summary": f"Auto-assigned tags #{payload.start_tag}–#{payload.start_tag + assigned - 1} to {assigned} households for {current_year}",
+            "summary": f"Auto-assigned tags #{payload.start_tag}–#{payload.start_tag + assigned - 1} to {assigned} households for {tag_year} (based on {current_year} hours)",
             "start_tag": payload.start_tag, "end_tag": payload.end_tag,
             "assigned": assigned, "tags_remaining": tags_remaining,
         })
