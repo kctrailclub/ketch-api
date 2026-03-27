@@ -54,6 +54,7 @@ class SettingsUpdate(BaseModel):
 class SendRewardsRequest(BaseModel):
     email_type:    str   # "reward" or "nudge"
     household_ids: list[int]
+    year:          int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -71,13 +72,14 @@ def get_reward_threshold(
 
 @router.get("/rewards")
 def get_reward_settings(
+    year: int = None,
     db: Session = Depends(get_db),
     _admin: User = Depends(get_current_admin),
 ):
     threshold = int(get_setting(db, "reward_threshold") or 10)
 
-    # Calculate household credited hours for current year
-    current_year = date.today().year
+    # Calculate household credited hours for selected year (default: current)
+    current_year = year or date.today().year
     hour_records = (
         db.query(Hour)
         .filter(
@@ -240,8 +242,8 @@ def send_reward_emails(
         subject_tpl = get_setting(db, "nudge_email_subject")
         body_tpl    = get_setting(db, "nudge_email_body")
 
-    # Re-fetch hours to get current credited values
-    current_year = date.today().year
+    # Re-fetch hours to get credited values for selected year
+    current_year = payload.year or date.today().year
     hour_records = (
         db.query(Hour)
         .filter(Hour.status == "approved", Hour.credit_year == current_year)
@@ -384,6 +386,7 @@ def save_reward_tag(
 class AutoAssignRequest(BaseModel):
     start_tag: int
     end_tag:   int
+    year:      int | None = None
 
 
 @router.post("/rewards/auto-assign-tags")
@@ -402,7 +405,7 @@ def auto_assign_tags(
         raise HTTPException(status_code=400, detail="Tag numbers must be positive")
 
     threshold = int(get_setting(db, "reward_threshold") or 10)
-    current_year = date.today().year
+    current_year = payload.year or date.today().year
 
     # Fetch all approved hours for this credit year, ordered by service_date
     hour_records = (
