@@ -1,0 +1,29 @@
+name: Data Fix
+description: Name misspellings, wrong hours, or other data corrections
+labels: ["bug: data-fix"]
+body:
+  - type: input
+    id: reported-by
+    attributes:
+      label: Reported by
+      description: Name or email of the member who reported the issue
+    validations:
+      required: true
+  - type: input
+    id: member-affected
+    attributes:
+      label: Member / household affected
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What needs to be corrected?
+      placeholder: "e.g., Last name is misspelled as 'Smithh' — should be 'Smith'"
+    validations:
+      required: true
+  - type: textarea
+    id: resolution
+    attributes:
+      label: Resolution notes
+      description: Steps taken to fix (filled in after resolution)

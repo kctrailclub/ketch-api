@@ -1,0 +1,38 @@
+name: Feature Enhancement
+description: Feature requests and improvements from members
+labels: ["enhancement"]
+body:
+  - type: input
+    id: reported-by
+    attributes:
+      label: Requested by
+      description: Name or email of the member who suggested this
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What is the request?
+      placeholder: "e.g., Add ability to see hours breakdown by month"
+    validations:
+      required: true
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Why is this useful?
+      description: Context on why this would help members or admins
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - Nice to have
+        - Should have (next few weeks)
+        - Must have (blocking members)
+    validations:
+      required: true
+  - type: textarea
+    id: implementation-notes
+    attributes:
+      label: Implementation notes
+      description: Technical notes or approach (filled in during planning)

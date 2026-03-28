@@ -1,0 +1,33 @@
+name: Training Request
+description: User training requests or how-to questions
+labels: ["support: training"]
+body:
+  - type: input
+    id: reported-by
+    attributes:
+      label: Reported by
+      description: Name or email of the member who needs help
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: What does the member need help with?
+      placeholder: "e.g., Member doesn't know how to log hours for their household"
+    validations:
+      required: true
+  - type: dropdown
+    id: urgency
+    attributes:
+      label: Urgency
+      options:
+        - Low — can wait for weekly update
+        - Medium — should address within a few days
+        - High — member is blocked
+    validations:
+      required: true
+  - type: textarea
+    id: resolution
+    attributes:
+      label: Resolution notes
+      description: How the request was resolved (filled in after resolution)
