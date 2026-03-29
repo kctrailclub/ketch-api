@@ -234,5 +234,6 @@ def me(current_user: User = Depends(get_current_user)):
         "lastname":     current_user.lastname,
         "email":        current_user.email,
         "is_admin":     bool(current_user.is_admin),
+        "is_tester":    bool(current_user.is_tester),
         "household_id": current_user.household_id,
     }

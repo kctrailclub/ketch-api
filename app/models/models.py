@@ -40,6 +40,7 @@ class User(Base):
     is_active             = Column(Integer, nullable=False, default=1)
     waiver                = Column(Date, nullable=True)
     youth                 = Column(Integer, nullable=False, default=0)
+    is_tester             = Column(Integer, nullable=False, default=0)
     invite_token          = Column(String(64), nullable=True, unique=True)
     invite_expires        = Column(DateTime, nullable=True)
     last_login            = Column(DateTime, nullable=True)

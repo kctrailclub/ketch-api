@@ -46,6 +46,7 @@ class CreateUserRequest(BaseModel):
     phone:        str = ""
     is_admin:     bool = False
     youth:        bool = False
+    is_tester:    bool = False
     household_id: Optional[int] = None       # existing household
     create_household: Optional[bool] = False  # explicitly create new
     # If household_id is set → use it; if create_household → auto-create; else → no household
@@ -60,6 +61,7 @@ class UpdateUserRequest(BaseModel):
     is_admin:     Optional[bool] = None
     is_active:    Optional[bool] = None
     youth:        Optional[bool] = None
+    is_tester:    Optional[bool] = None
     household_id: Union[int, None] = _UNSET  # distinguish "not sent" from "set to null"
     new_password: Optional[str] = None
 
@@ -97,6 +99,7 @@ def create_user(
         is_admin=int(payload.is_admin),
         is_active=0,               # inactive until they set a password
         youth=int(payload.youth),
+        is_tester=int(payload.is_tester),
         household_id=household_id,
         invite_token=token,
         invite_expires=expires,
@@ -137,6 +140,7 @@ def list_users(
             "is_admin":       bool(u.is_admin),
             "is_active":      bool(u.is_active),
             "youth":          bool(u.youth),
+            "is_tester":      bool(u.is_tester),
             "household_id":   u.household_id,
             "household_name": u.household.name if u.household else None,
             "last_login":     u.last_login,
@@ -169,6 +173,7 @@ def get_user(
         "is_admin":     bool(user.is_admin),
         "is_active":    bool(user.is_active),
         "youth":        bool(user.youth),
+        "is_tester":    bool(user.is_tester),
         "waiver":       user.waiver,
         "household_id": user.household_id,
         "last_login":   user.last_login,
@@ -187,7 +192,7 @@ def update_user(
         raise HTTPException(status_code=404, detail="User not found")
 
     changes = {}
-    for field in ("firstname", "lastname", "email", "phone", "is_admin", "is_active", "youth"):
+    for field in ("firstname", "lastname", "email", "phone", "is_admin", "is_active", "youth", "is_tester"):
         new_val = getattr(payload, field)
         if new_val is not None and str(new_val) != str(getattr(user, field)):
             changes[field] = {"old": getattr(user, field), "new": new_val}
@@ -204,6 +209,7 @@ def update_user(
         if not payload.is_active:
             db.query(RefreshToken).filter(RefreshToken.user_id == user_id).delete()
     if payload.youth        is not None: user.youth        = int(payload.youth)
+    if payload.is_tester    is not None: user.is_tester    = int(payload.is_tester)
     if payload.household_id is not _UNSET: user.household_id = payload.household_id
     if payload.new_password:
         if len(payload.new_password) < 8:
