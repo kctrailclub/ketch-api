@@ -428,11 +428,16 @@ def sync_efforts(
     activities_checked = 0
     page = 1
 
-    # Fetch up to 200 recent activities (4 pages of 50)
-    while page <= 4:
+    # Only sync activities from the current year
+    year_start = datetime(datetime.now(timezone.utc).year, 1, 1, tzinfo=timezone.utc)
+    after_ts = int(year_start.timestamp())
+
+    # Fetch activities from current year (paginated)
+    while page <= 10:
         activities = _strava_get(token, "/athlete/activities", params={
             "per_page": 50,
             "page": page,
+            "after": after_ts,
         })
 
         if not activities:
@@ -500,15 +505,20 @@ def get_leaderboard(
     if not segment:
         raise HTTPException(status_code=404, detail="Segment not found")
 
-    # Best elapsed_time per connection_id
+    # Best elapsed_time per connection_id (current year only)
     from sqlalchemy import and_
+
+    year_start = datetime(datetime.now(timezone.utc).year, 1, 1, tzinfo=timezone.utc)
 
     subq = (
         db.query(
             StravaSegmentEffort.connection_id,
             func.min(StravaSegmentEffort.elapsed_time).label("best_time"),
         )
-        .filter(StravaSegmentEffort.segment_id == segment_id)
+        .filter(
+            StravaSegmentEffort.segment_id == segment_id,
+            StravaSegmentEffort.start_date >= year_start,
+        )
         .group_by(StravaSegmentEffort.connection_id)
         .subquery()
     )
@@ -557,11 +567,14 @@ def get_my_efforts(
     if not conn:
         return []
 
+    year_start = datetime(datetime.now(timezone.utc).year, 1, 1, tzinfo=timezone.utc)
+
     efforts = (
         db.query(StravaSegmentEffort)
         .filter(
             StravaSegmentEffort.connection_id == conn.connection_id,
             StravaSegmentEffort.segment_id == segment_id,
+            StravaSegmentEffort.start_date >= year_start,
         )
         .order_by(StravaSegmentEffort.elapsed_time)
         .all()
@@ -593,13 +606,19 @@ def get_my_stats(
     if not conn:
         return {"connected": False}
 
+    year_start = datetime(datetime.now(timezone.utc).year, 1, 1, tzinfo=timezone.utc)
+
     total_efforts = db.query(StravaSegmentEffort).filter(
-        StravaSegmentEffort.connection_id == conn.connection_id
+        StravaSegmentEffort.connection_id == conn.connection_id,
+        StravaSegmentEffort.start_date >= year_start,
     ).count()
 
     segments_with_efforts = (
         db.query(StravaSegmentEffort.segment_id)
-        .filter(StravaSegmentEffort.connection_id == conn.connection_id)
+        .filter(
+            StravaSegmentEffort.connection_id == conn.connection_id,
+            StravaSegmentEffort.start_date >= year_start,
+        )
         .distinct()
         .count()
     )
