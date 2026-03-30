@@ -88,6 +88,8 @@ def submit_hours(
 
     if payload.hours <= 0:
         raise HTTPException(status_code=400, detail="Hours must be greater than zero")
+    if payload.hours > 24:
+        raise HTTPException(status_code=400, detail="Hours per entry cannot exceed 24")
 
     existing = _daily_hours(db, payload.member_id, payload.service_date)
     if existing + payload.hours > 24:
@@ -392,6 +394,8 @@ def update_hours(
     if payload.hours is not None:
         if payload.hours <= 0:
             raise HTTPException(status_code=400, detail="Hours must be greater than zero")
+        if payload.hours > 24:
+            raise HTTPException(status_code=400, detail="Hours per entry cannot exceed 24")
         hour.hours = payload.hours
 
     if payload.notes is not None:

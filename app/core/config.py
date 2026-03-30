@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # Anthropic (for natural language query)
     anthropic_api_key: str | None = None
 
+    # Environment: "staging" or "production" (controls Swagger docs visibility)
+    environment: str = "production"
+
+
     class Config:
         env_file = ".env"
 
