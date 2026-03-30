@@ -403,7 +403,12 @@ def sync_efforts(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """Sync the current user's efforts on all featured segments from Strava."""
+    """Sync the current user's efforts on all featured segments from Strava.
+
+    Uses the activities endpoint (free tier) instead of segment_efforts (paid).
+    Fetches recent activities, then fetches detailed activity data to extract
+    segment efforts that match our featured segments.
+    """
     _ensure_strava_configured()
 
     conn = db.query(StravaConnection).filter(StravaConnection.user_id == current_user.user_id).first()
@@ -412,26 +417,46 @@ def sync_efforts(
 
     token = _refresh_token_if_needed(db, conn)
 
-    # Get all active featured segments
+    # Get all active featured segments — build lookup by strava_segment_id
     segments = db.query(StravaSegment).filter(StravaSegment.is_active == 1).all()
     if not segments:
         return {"new_efforts": 0, "detail": "No featured segments to sync"}
 
+    seg_lookup = {s.strava_segment_id: s for s in segments}
+
     new_count = 0
-    errors = 0
+    activities_checked = 0
+    page = 1
 
-    for seg in segments:
-        try:
-            # Fetch this user's efforts on this segment
-            efforts_data = _strava_get(token, "/segment_efforts", params={
-                "segment_id": seg.strava_segment_id,
-                "per_page": 100,
-            })
+    # Fetch up to 200 recent activities (4 pages of 50)
+    while page <= 4:
+        activities = _strava_get(token, "/athlete/activities", params={
+            "per_page": 50,
+            "page": page,
+        })
 
-            if not efforts_data:
+        if not activities:
+            break
+
+        for activity_summary in activities:
+            activity_id = activity_summary["id"]
+            activities_checked += 1
+
+            # Fetch detailed activity to get segment_efforts
+            try:
+                activity_detail = _strava_get(token, f"/activities/{activity_id}")
+            except Exception as exc:
+                log.error("Error fetching activity %s: %s", activity_id, exc)
                 continue
 
-            for effort in efforts_data:
+            if not activity_detail:
+                continue
+
+            for effort in activity_detail.get("segment_efforts", []):
+                seg_strava_id = effort.get("segment", {}).get("id")
+                if seg_strava_id not in seg_lookup:
+                    continue  # Not a featured segment
+
                 strava_effort_id = effort["id"]
                 # Skip if already cached
                 exists = db.query(StravaSegmentEffort).filter(
@@ -442,31 +467,26 @@ def sync_efforts(
 
                 db.add(StravaSegmentEffort(
                     connection_id=conn.connection_id,
-                    segment_id=seg.segment_id,
+                    segment_id=seg_lookup[seg_strava_id].segment_id,
                     strava_effort_id=strava_effort_id,
-                    activity_id=effort["activity"]["id"],
+                    activity_id=activity_id,
                     elapsed_time=effort["elapsed_time"],
                     moving_time=effort["moving_time"],
                     start_date=datetime.fromisoformat(effort["start_date"].replace("Z", "+00:00")),
                 ))
                 new_count += 1
 
-        except HTTPException:
-            errors += 1
-        except Exception as exc:
-            log.error("Error syncing segment %s: %s", seg.strava_segment_id, exc)
-            errors += 1
+        if len(activities) < 50:
+            break  # No more pages
+        page += 1
 
     if new_count > 0:
         log_action(db, user_id=current_user.user_id, action="strava_sync", entity_type="strava",
                    entity_id=current_user.user_id,
-                   details={"summary": f"Synced {new_count} new effort(s) from Strava"})
+                   details={"summary": f"Synced {new_count} new effort(s) from {activities_checked} activities"})
     db.commit()
 
-    msg = f"Synced {new_count} new effort(s)"
-    if errors:
-        msg += f" ({errors} segment(s) had errors)"
-    return {"new_efforts": new_count, "detail": msg}
+    return {"new_efforts": new_count, "detail": f"Synced {new_count} new effort(s) from {activities_checked} activities"}
 
 
 @router.get("/segments/{segment_id}/leaderboard")
