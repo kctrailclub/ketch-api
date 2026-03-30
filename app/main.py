@@ -6,10 +6,16 @@ from app.core.config import settings
 from app.routers import audit, auth, households, hours, nl_query, notifications, projects, push, resources, strava, users, registrations
 from app.routers import settings as settings_router
 
+# Swagger UI enabled on staging only; disabled in production for security.
+# To re-enable: set ENVIRONMENT=staging in Railway env vars.
+_enable_docs = settings.environment != "production"
+
 app = FastAPI(
     title=settings.app_name,
     description="Volunteer hours tracking API for KCTC",
     version="1.0.0",
+    docs_url="/docs" if _enable_docs else None,
+    redoc_url="/redoc" if _enable_docs else None,
 )
 
 # CORS -- origins controlled by environment variables.

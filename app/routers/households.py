@@ -81,8 +81,9 @@ def create_household(
 @router.get("/")
 def list_households(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_admin),
 ):
+    """Admin-only: list all households with full details including addresses."""
     households = db.query(Household).order_by(Household.name).all()
     return [
         {
