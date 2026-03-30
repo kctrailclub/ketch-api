@@ -232,6 +232,37 @@ class StravaSegment(Base):
     efforts            = relationship("StravaSegmentEffort", back_populates="segment", cascade="all, delete-orphan")
 
 
+class StravaTrail(Base):
+    __tablename__ = "strava_trails"
+
+    trail_id       = Column(Integer, primary_key=True, autoincrement=True)
+    name           = Column(String(200), nullable=False)
+    distance_miles = Column(Numeric(5, 2), nullable=True)
+    elevation_feet = Column(Integer, nullable=True)
+    year           = Column(Integer, nullable=False, default=2026)
+    sort_order     = Column(Integer, nullable=False, default=0)
+    is_active      = Column(Integer, nullable=False, default=1)
+    created_by     = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created        = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated        = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    author         = relationship("User", foreign_keys=[created_by])
+    trail_segments = relationship("StravaTrailSegment", back_populates="trail", cascade="all, delete-orphan")
+
+
+class StravaTrailSegment(Base):
+    __tablename__ = "strava_trail_segments"
+
+    trail_segment_id = Column(Integer, primary_key=True, autoincrement=True)
+    trail_id         = Column(Integer, ForeignKey("strava_trails.trail_id", ondelete="CASCADE"), nullable=False)
+    segment_id       = Column(Integer, ForeignKey("strava_segments.segment_id", ondelete="CASCADE"), nullable=False)
+    segment_order    = Column(Integer, nullable=False, default=0)
+    created          = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    trail            = relationship("StravaTrail", foreign_keys=[trail_id], back_populates="trail_segments")
+    segment          = relationship("StravaSegment", foreign_keys=[segment_id])
+
+
 class StravaSegmentEffort(Base):
     __tablename__ = "strava_segment_efforts"
 
@@ -240,6 +271,7 @@ class StravaSegmentEffort(Base):
     segment_id         = Column(Integer, ForeignKey("strava_segments.segment_id", ondelete="CASCADE"), nullable=False)
     strava_effort_id   = Column(BigInteger, nullable=False, unique=True)
     activity_id        = Column(BigInteger, nullable=False)
+    activity_type      = Column(String(20), nullable=True)
     elapsed_time       = Column(Integer, nullable=False)
     moving_time        = Column(Integer, nullable=False)
     start_date         = Column(DateTime, nullable=False)
