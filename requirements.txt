@@ -12,3 +12,4 @@ emails==0.6.0
 itsdangerous==2.2.0
 anthropic>=0.39.0
 pywebpush>=2.3.0
+requests>=2.31.0

@@ -37,6 +37,10 @@ class Settings(BaseSettings):
     # Anthropic (for natural language query)
     anthropic_api_key: str | None = None
 
+    # Strava
+    strava_client_id: str | None = None
+    strava_client_secret: str | None = None
+
     class Config:
         env_file = ".env"
 

@@ -193,6 +193,62 @@ class PushSubscription(Base):
     user            = relationship("User", foreign_keys=[user_id])
 
 
+class StravaConnection(Base):
+    __tablename__ = "strava_connections"
+
+    connection_id      = Column(Integer, primary_key=True, autoincrement=True)
+    user_id            = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, unique=True)
+    strava_athlete_id  = Column(BigInteger, nullable=False, unique=True)
+    access_token       = Column(String(255), nullable=False)
+    refresh_token      = Column(String(255), nullable=False)
+    token_expires_at   = Column(DateTime, nullable=False)
+    athlete_firstname  = Column(String(100), nullable=True)
+    athlete_lastname   = Column(String(100), nullable=True)
+    created            = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated            = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user               = relationship("User", foreign_keys=[user_id])
+    efforts            = relationship("StravaSegmentEffort", back_populates="connection", cascade="all, delete-orphan")
+
+
+class StravaSegment(Base):
+    __tablename__ = "strava_segments"
+
+    segment_id         = Column(Integer, primary_key=True, autoincrement=True)
+    strava_segment_id  = Column(BigInteger, nullable=False, unique=True)
+    name               = Column(String(200), nullable=False)
+    activity_type      = Column(String(20), nullable=False, default="Ride")
+    distance           = Column(Numeric(8, 2), nullable=True)
+    average_grade      = Column(Numeric(5, 2), nullable=True)
+    elevation_high     = Column(Numeric(8, 2), nullable=True)
+    elevation_low      = Column(Numeric(8, 2), nullable=True)
+    sort_order         = Column(Integer, nullable=False, default=0)
+    is_active          = Column(Integer, nullable=False, default=1)
+    created_by         = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created            = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated            = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    author             = relationship("User", foreign_keys=[created_by])
+    efforts            = relationship("StravaSegmentEffort", back_populates="segment", cascade="all, delete-orphan")
+
+
+class StravaSegmentEffort(Base):
+    __tablename__ = "strava_segment_efforts"
+
+    effort_id          = Column(Integer, primary_key=True, autoincrement=True)
+    connection_id      = Column(Integer, ForeignKey("strava_connections.connection_id", ondelete="CASCADE"), nullable=False)
+    segment_id         = Column(Integer, ForeignKey("strava_segments.segment_id", ondelete="CASCADE"), nullable=False)
+    strava_effort_id   = Column(BigInteger, nullable=False, unique=True)
+    activity_id        = Column(BigInteger, nullable=False)
+    elapsed_time       = Column(Integer, nullable=False)
+    moving_time        = Column(Integer, nullable=False)
+    start_date         = Column(DateTime, nullable=False)
+    created            = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    connection         = relationship("StravaConnection", foreign_keys=[connection_id], back_populates="efforts")
+    segment            = relationship("StravaSegment", foreign_keys=[segment_id], back_populates="efforts")
+
+
 class ResourceSponsor(Base):
     __tablename__ = "resource_sponsors"
 
