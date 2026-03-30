@@ -13,27 +13,30 @@ log = logging.getLogger(__name__)
 
 
 def _send(to: str, subject: str, html: str) -> None:
+    providers = []
     if settings.zeptomail_token:
-        provider = "ZeptoMail"
-    elif settings.resend_api_key:
-        provider = "Resend"
-    elif settings.smtp_host:
-        provider = "SMTP"
-    else:
+        providers.append(("ZeptoMail", _send_zeptomail))
+    if settings.resend_api_key:
+        providers.append(("Resend", _send_resend))
+    if settings.smtp_host:
+        providers.append(("SMTP", _send_smtp))
+
+    if not providers:
         raise RuntimeError("No email provider configured (set ZEPTOMAIL_TOKEN, RESEND_API_KEY, or SMTP_HOST)")
 
-    log.info("Sending email via %s to=%s subject=%r", provider, to, subject)
-    try:
-        if provider == "ZeptoMail":
-            _send_zeptomail(to, subject, html)
-        elif provider == "Resend":
-            _send_resend(to, subject, html)
-        else:
-            _send_smtp(to, subject, html)
-        log.info("Email sent successfully via %s to=%s", provider, to)
-    except Exception as exc:
-        log.error("Email failed via %s to=%s: %s", provider, to, exc)
-        raise
+    last_exc = None
+    for name, send_fn in providers:
+        log.info("Sending email via %s to=%s subject=%r", name, to, subject)
+        try:
+            send_fn(to, subject, html)
+            log.info("Email sent successfully via %s to=%s", name, to)
+            return
+        except Exception as exc:
+            last_exc = exc
+            log.warning("Email failed via %s to=%s: %s — trying next provider", name, to, exc)
+
+    log.error("All email providers failed for to=%s", to)
+    raise last_exc
 
 
 def _send_zeptomail(to: str, subject: str, html: str) -> None:
