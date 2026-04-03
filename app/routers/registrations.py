@@ -146,6 +146,9 @@ def approve_registration(
             entity_id=hh.household_id,
             details={"summary": f"Auto-created household '{reg.lastname}' for registration approval"})
         household_id = hh.household_id
+        new_hh = hh
+    else:
+        new_hh = None
 
     user = User(
         firstname=reg.firstname,
@@ -160,6 +163,11 @@ def approve_registration(
         invite_expires=expires,
     )
     db.add(user)
+    db.flush()
+
+    # Set primary contact on newly created household
+    if new_hh:
+        new_hh.primary_user_id = user.user_id
 
     reg.status      = "approved"
     reg.reviewed_by = admin.user_id

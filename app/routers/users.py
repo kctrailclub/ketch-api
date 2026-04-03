@@ -19,8 +19,8 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-def _auto_create_household(db: Session, lastname: str, admin_user_id: int) -> int:
-    """Create a household for a user who doesn't have one. Returns household_id."""
+def _auto_create_household(db: Session, lastname: str, admin_user_id: int) -> "Household":
+    """Create a household for a user who doesn't have one. Returns the Household object."""
     # Generate next household code
     last = db.query(Household).order_by(Household.household_id.desc()).first()
     next_id = (last.household_id + 1) if last else 1
@@ -29,10 +29,11 @@ def _auto_create_household(db: Session, lastname: str, admin_user_id: int) -> in
     hh = Household(household_code=code, name=lastname)
     db.add(hh)
     db.flush()
+    # primary_user_id set by caller after user is created
     log_action(db, user_id=admin_user_id, action="auto_create", entity_type="household",
         entity_id=hh.household_id,
         details={"summary": f"Auto-created household '{lastname}' for new member"})
-    return hh.household_id
+    return hh
 
 
 # ---------------------------------------------------------------------------
@@ -84,8 +85,10 @@ def create_user(
 
     # Household assignment: explicit ID, create new, or none
     household_id = payload.household_id
+    new_hh = None
     if not household_id and payload.create_household:
-        household_id = _auto_create_household(db, payload.lastname, _admin.user_id)
+        new_hh = _auto_create_household(db, payload.lastname, _admin.user_id)
+        household_id = new_hh.household_id
 
     token = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(hours=settings.invite_token_expire_hours)
@@ -106,6 +109,11 @@ def create_user(
     )
     db.add(user)
     db.flush()
+
+    # Set primary contact on newly created household
+    if new_hh:
+        new_hh.primary_user_id = user.user_id
+
     log_action(db, user_id=_admin.user_id, action="create", entity_type="user", entity_id=user.user_id,
         details={"summary": f"Created user {payload.firstname} {payload.lastname} ({payload.email})"})
     db.commit()
@@ -258,6 +266,9 @@ def bulk_create_households(
         for u in members:
             u.household_id = hh.household_id
             assigned += 1
+
+        # Set first member as primary contact
+        hh.primary_user_id = members[0].user_id
 
         log_action(db, user_id=_admin.user_id, action="bulk_create", entity_type="household",
             entity_id=hh.household_id,
