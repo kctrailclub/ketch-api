@@ -48,6 +48,7 @@ class CreateUserRequest(BaseModel):
     is_admin:     bool = False
     youth:        bool = False
     is_tester:    bool = False
+    waiver:       Optional[str] = None       # ISO date string
     household_id: Optional[int] = None       # existing household
     create_household: Optional[bool] = False  # explicitly create new
     # If household_id is set → use it; if create_household → auto-create; else → no household
@@ -94,6 +95,7 @@ def create_user(
     token = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(hours=settings.invite_token_expire_hours)
 
+    from datetime import date as date_type
     user = User(
         firstname=payload.firstname,
         lastname=payload.lastname,
@@ -104,6 +106,7 @@ def create_user(
         is_active=0,               # inactive until they set a password
         youth=int(payload.youth),
         is_tester=int(payload.is_tester),
+        waiver=date_type.fromisoformat(payload.waiver) if payload.waiver else None,
         household_id=household_id,
         invite_token=token,
         invite_expires=expires,
