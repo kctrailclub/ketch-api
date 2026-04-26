@@ -57,6 +57,16 @@ class SendRewardsRequest(BaseModel):
     year:          int | None = None
 
 
+class WaiverSettingsUpdate(BaseModel):
+    waiver_cutoff_date:        str   # ISO date
+    waiver_reminder_subject:   str
+    waiver_reminder_body:      str
+
+
+class SendWaiverRemindersRequest(BaseModel):
+    user_ids: list[int]
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -499,4 +509,117 @@ def auto_assign_tags(
         "total_eligible": len(eligible),
         "total_tags": total_tags,
         "assignments": assignments,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Waiver Status
+# ---------------------------------------------------------------------------
+
+@router.get("/waiver")
+def get_waiver_settings(
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_admin),
+):
+    cutoff_str = get_setting(db, "waiver_cutoff_date")
+    cutoff = date.fromisoformat(cutoff_str) if cutoff_str else None
+
+    members = (
+        db.query(User)
+        .filter(User.is_active == 1)
+        .order_by(User.lastname, User.firstname)
+        .all()
+    )
+
+    current = []
+    expired = []
+    missing = []
+
+    for u in members:
+        entry = {
+            "user_id":    u.user_id,
+            "firstname":  u.firstname,
+            "lastname":   u.lastname,
+            "email":      u.email,
+            "waiver":     u.waiver.isoformat() if u.waiver else None,
+            "household_name": u.household.name if u.household else None,
+        }
+        if not u.waiver:
+            entry["status"] = "missing"
+            missing.append(entry)
+        elif cutoff and u.waiver < cutoff:
+            entry["status"] = "expired"
+            expired.append(entry)
+        else:
+            entry["status"] = "current"
+            current.append(entry)
+
+    return {
+        "waiver_cutoff_date":      cutoff_str,
+        "waiver_reminder_subject": get_setting(db, "waiver_reminder_subject"),
+        "waiver_reminder_body":    get_setting(db, "waiver_reminder_body"),
+        "current":  current,
+        "expired":  expired,
+        "missing":  missing,
+        "total":    len(members),
+    }
+
+
+@router.post("/waiver")
+def update_waiver_settings(
+    payload: WaiverSettingsUpdate,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_admin),
+):
+    set_setting(db, "waiver_cutoff_date",      payload.waiver_cutoff_date)
+    set_setting(db, "waiver_reminder_subject",  payload.waiver_reminder_subject)
+    set_setting(db, "waiver_reminder_body",     payload.waiver_reminder_body)
+    log_action(db, user_id=_admin.user_id, action="update", entity_type="settings",
+        details={"summary": f"Updated waiver settings (cutoff: {payload.waiver_cutoff_date})"})
+    db.commit()
+    return {"detail": "Waiver settings saved"}
+
+
+@router.post("/waiver/send")
+def send_waiver_reminders(
+    payload: SendWaiverRemindersRequest,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(get_current_admin),
+):
+    subject_tpl = get_setting(db, "waiver_reminder_subject")
+    body_tpl    = get_setting(db, "waiver_reminder_body")
+
+    if not subject_tpl or not body_tpl:
+        raise HTTPException(status_code=400, detail="Waiver reminder email template not configured")
+
+    sent = 0
+    errors = []
+
+    for uid in payload.user_ids:
+        user = db.get(User, uid)
+        if not user or not user.email or "placeholder.invalid" in user.email:
+            errors.append(f"No valid email for user ID {uid}")
+            continue
+
+        replacements = {
+            "firstname": user.firstname,
+            "lastname":  user.lastname,
+            "email":     user.email,
+        }
+        subject = apply_template(subject_tpl, replacements)
+        body    = apply_template(body_tpl,    replacements)
+
+        try:
+            send_raw_email(user.email, subject, body)
+            sent += 1
+        except Exception as e:
+            errors.append(f"{user.email}: {str(e)}")
+
+    log_action(db, user_id=_admin.user_id, action="send_waiver_reminders", entity_type="settings",
+        details={"summary": f"Sent {sent} waiver reminder email{'s' if sent != 1 else ''}", "count": sent})
+    db.commit()
+    return {
+        "sent":   sent,
+        "errors": errors,
+        "detail": f"{sent} reminder{'s' if sent != 1 else ''} sent",
     }

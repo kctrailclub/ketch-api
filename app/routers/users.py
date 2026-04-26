@@ -64,6 +64,7 @@ class UpdateUserRequest(BaseModel):
     youth:        Optional[bool] = None
     is_tester:    Optional[bool] = None
     household_id: Union[int, None] = _UNSET  # distinguish "not sent" from "set to null"
+    waiver:       Union[str, None] = _UNSET  # date string or null to clear
     new_password: Optional[str] = None
 
     class Config:
@@ -149,6 +150,7 @@ def list_users(
             "is_active":      bool(u.is_active),
             "youth":          bool(u.youth),
             "is_tester":      bool(u.is_tester),
+            "waiver":         u.waiver.isoformat() if u.waiver else None,
             "household_id":   u.household_id,
             "household_name": u.household.name if u.household else None,
             "last_login":     u.last_login,
@@ -219,6 +221,12 @@ def update_user(
     if payload.youth        is not None: user.youth        = int(payload.youth)
     if payload.is_tester    is not None: user.is_tester    = int(payload.is_tester)
     if payload.household_id is not _UNSET: user.household_id = payload.household_id
+    if payload.waiver is not _UNSET:
+        from datetime import date as date_type
+        if payload.waiver:
+            user.waiver = date_type.fromisoformat(payload.waiver)
+        else:
+            user.waiver = None
     if payload.new_password:
         if len(payload.new_password) < 8:
             raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
