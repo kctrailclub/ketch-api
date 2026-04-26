@@ -19,14 +19,14 @@ log = logging.getLogger(__name__)
 router = APIRouter(prefix="/users", tags=["users"])
 
 
-def _auto_create_household(db: Session, lastname: str, admin_user_id: int) -> "Household":
+def _auto_create_household(db: Session, lastname: str, admin_user_id: int, address: str = "") -> "Household":
     """Create a household for a user who doesn't have one. Returns the Household object."""
     # Generate next household code
     last = db.query(Household).order_by(Household.household_id.desc()).first()
     next_id = (last.household_id + 1) if last else 1
     code = f"HH-{next_id:04d}"
 
-    hh = Household(household_code=code, name=lastname)
+    hh = Household(household_code=code, name=lastname, address=address)
     db.add(hh)
     db.flush()
     # primary_user_id set by caller after user is created
@@ -51,6 +51,7 @@ class CreateUserRequest(BaseModel):
     waiver:       Optional[str] = None       # ISO date string
     household_id: Optional[int] = None       # existing household
     create_household: Optional[bool] = False  # explicitly create new
+    household_address: Optional[str] = None  # address for newly created household
     # If household_id is set → use it; if create_household → auto-create; else → no household
 
 _UNSET = object()
@@ -89,7 +90,7 @@ def create_user(
     household_id = payload.household_id
     new_hh = None
     if not household_id and payload.create_household:
-        new_hh = _auto_create_household(db, payload.lastname, _admin.user_id)
+        new_hh = _auto_create_household(db, payload.lastname, _admin.user_id, address=payload.household_address or "")
         household_id = new_hh.household_id
 
     token = secrets.token_urlsafe(32)
