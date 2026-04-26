@@ -111,6 +111,8 @@ def list_registrations(
 class ApproveRequest(BaseModel):
     household_id: int | None = None        # existing household
     create_household: bool = False          # explicitly create new
+    waiver: str | None = None              # ISO date string for waiver
+    household_address: str | None = None   # address for newly created household
 
 
 @router.post("/{request_id}/approve")
@@ -139,7 +141,7 @@ def approve_registration(
     if not household_id and body.create_household:
         last_hh = db.query(Household).order_by(Household.household_id.desc()).first()
         next_hh_id = (last_hh.household_id + 1) if last_hh else 1
-        hh = Household(household_code=f"HH-{next_hh_id:04d}", name=reg.lastname)
+        hh = Household(household_code=f"HH-{next_hh_id:04d}", name=reg.lastname, address=body.household_address or "")
         db.add(hh)
         db.flush()
         log_action(db, user_id=admin.user_id, action="auto_create", entity_type="household",
@@ -150,6 +152,7 @@ def approve_registration(
     else:
         new_hh = None
 
+    from datetime import date as date_type
     user = User(
         firstname=reg.firstname,
         lastname=reg.lastname,
@@ -158,6 +161,7 @@ def approve_registration(
         password_hash="",
         is_admin=0,
         is_active=1,
+        waiver=date_type.fromisoformat(body.waiver) if body.waiver else None,
         household_id=household_id,
         invite_token=token,
         invite_expires=expires,
