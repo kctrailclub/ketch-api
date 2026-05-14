@@ -1,8 +1,9 @@
 import logging
+import os
 import secrets
 from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
@@ -34,11 +35,7 @@ class LoginRequest(BaseModel):
 
 class TokenResponse(BaseModel):
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
-
-class RefreshRequest(BaseModel):
-    refresh_token: str
 
 class SetPasswordRequest(BaseModel):
     token: str
@@ -57,11 +54,40 @@ class ForgotPasswordRequest(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Refresh-token cookie
+# ---------------------------------------------------------------------------
+
+REFRESH_COOKIE_NAME = "kctc_rt"
+REFRESH_COOKIE_PATH = "/auth"
+
+
+def _allowed_origins() -> set[str]:
+    extras = [o.strip() for o in os.getenv("EXTRA_CORS_ORIGINS", "").split(",") if o.strip()]
+    return {settings.frontend_url, *extras}
+
+
+def _set_refresh_cookie(response: Response, raw_refresh: str) -> None:
+    response.set_cookie(
+        key=REFRESH_COOKIE_NAME,
+        value=raw_refresh,
+        max_age=settings.refresh_token_expire_days * 86400,
+        path=REFRESH_COOKIE_PATH,
+        secure=True,
+        httponly=True,
+        samesite="none",
+    )
+
+
+def _clear_refresh_cookie(response: Response) -> None:
+    response.delete_cookie(key=REFRESH_COOKIE_NAME, path=REFRESH_COOKIE_PATH)
+
+
+# ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
 
 @router.post("/login", response_model=TokenResponse)
-def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+def login(payload: LoginRequest, request: Request, response: Response, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.email == payload.email).first()
 
     if not user or not verify_password(payload.password, user.password_hash):
@@ -94,19 +120,38 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         ip_address=request.client.host if request.client else None)
     db.commit()
 
-    return TokenResponse(
-        access_token=create_access_token(user.user_id),
-        refresh_token=raw_refresh,
-    )
+    _set_refresh_cookie(response, raw_refresh)
+    return TokenResponse(access_token=create_access_token(user.user_id))
 
 
 @router.post("/refresh", response_model=TokenResponse)
-def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
+def refresh(request: Request, response: Response, db: Session = Depends(get_db)):
+    origin = request.headers.get("origin")
+    if not origin or origin not in _allowed_origins():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing origin",
+        )
+
+    raw_refresh = request.cookies.get(REFRESH_COOKIE_NAME)
+    if not raw_refresh:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing refresh token",
+        )
+
     token_row = db.query(RefreshToken).filter(
-        RefreshToken.token_hash == hash_token(payload.refresh_token),
+        RefreshToken.token_hash == hash_token(raw_refresh),
     ).first()
 
-    if not token_row or token_row.expires_at < datetime.now(timezone.utc):
+    # expires_at returns from the DB tz-naive (Column(DateTime) has no timezone=True);
+    # treat stored datetimes as UTC for the comparison.
+    expired = token_row is not None and (
+        (token_row.expires_at if token_row.expires_at.tzinfo
+         else token_row.expires_at.replace(tzinfo=timezone.utc))
+        < datetime.now(timezone.utc)
+    )
+    if not token_row or expired:
         if token_row:
             db.delete(token_row)
             db.commit()
@@ -126,18 +171,16 @@ def refresh(payload: RefreshRequest, db: Session = Depends(get_db)):
 
     # Rotate: delete old, create new
     db.delete(token_row)
-    raw_refresh = generate_refresh_token()
+    new_refresh = generate_refresh_token()
     db.add(RefreshToken(
         user_id=user.user_id,
-        token_hash=hash_token(raw_refresh),
+        token_hash=hash_token(new_refresh),
         expires_at=datetime.now(timezone.utc) + timedelta(days=settings.refresh_token_expire_days),
     ))
     db.commit()
 
-    return TokenResponse(
-        access_token=create_access_token(user.user_id),
-        refresh_token=raw_refresh,
-    )
+    _set_refresh_cookie(response, new_refresh)
+    return TokenResponse(access_token=create_access_token(user.user_id))
 
 
 @router.post("/set-password", status_code=status.HTTP_200_OK)
@@ -213,16 +256,15 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     return {"detail": "If that email is registered you will receive a reset link shortly"}
 
 
-class LogoutRequest(BaseModel):
-    refresh_token: str
-
-
 @router.post("/logout", status_code=status.HTTP_200_OK)
-def logout(payload: LogoutRequest, db: Session = Depends(get_db)):
-    db.query(RefreshToken).filter(
-        RefreshToken.token_hash == hash_token(payload.refresh_token),
-    ).delete()
-    db.commit()
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    raw_refresh = request.cookies.get(REFRESH_COOKIE_NAME)
+    if raw_refresh:
+        db.query(RefreshToken).filter(
+            RefreshToken.token_hash == hash_token(raw_refresh),
+        ).delete()
+        db.commit()
+    _clear_refresh_cookie(response)
     return {"detail": "Logged out"}
 
 

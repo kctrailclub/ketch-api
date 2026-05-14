@@ -44,8 +44,10 @@ class Settings(BaseSettings):
     # Environment: "staging" or "production" (controls Swagger docs visibility)
     environment: str = "production"
 
+
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 
 _raw = Settings()
