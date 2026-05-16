@@ -23,7 +23,6 @@ from app.core.audit import log_action
 from app.models.models import RefreshToken, User
 
 router = APIRouter(prefix="/auth", tags=["auth"])
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +128,6 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
 def refresh(request: Request, response: Response, db: Session = Depends(get_db)):
     origin = request.headers.get("origin")
     if not origin or origin not in _allowed_origins():
-        logger.warning("refresh rejected: origin=%r allowed=%r", origin, _allowed_origins())
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing origin",
