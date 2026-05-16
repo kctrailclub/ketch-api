@@ -597,7 +597,7 @@ def send_waiver_reminders(
 
     for uid in payload.user_ids:
         user = db.get(User, uid)
-        if not user or not user.email or "placeholder.invalid" in user.email:
+        if not user or not user.is_active or not user.email or "placeholder.invalid" in user.email:
             errors.append(f"No valid email for user ID {uid}")
             continue
 
