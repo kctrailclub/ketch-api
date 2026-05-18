@@ -1,17 +1,25 @@
+import logging
 import re
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Optional
+
+import sqlglot
+import sqlglot.expressions as exp
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 import anthropic
 
+from app.core.audit import log_action
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.dependencies import get_current_admin
-from app.models.models import User
+from app.models.models import NlQueryUsage, User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
@@ -86,15 +94,10 @@ Rules:
 
 ALLOWED_TABLES = {"hours", "users", "projects", "households"}
 
-# Patterns that indicate a write operation — rejected outright.
-FORBIDDEN_PATTERNS = re.compile(
-    r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|REPLACE|RENAME"
-    r"|GRANT|REVOKE|CALL|EXEC|EXECUTE|LOAD"
-    r"|INTO\s+OUTFILE|INTO\s+DUMPFILE)\b",
-    re.IGNORECASE,
-)
-
 MAX_ROWS = 500
+
+# Functions that are dangerous even inside SELECT — rejected at AST level.
+_FORBIDDEN_FUNCS = frozenset({"load_file", "benchmark", "sleep", "get_lock"})
 
 
 # ---------------------------------------------------------------------------
@@ -149,35 +152,120 @@ def _generate_sql(question: str) -> str:
 
 
 def _validate_sql(sql: str) -> str:
-    """Validate that the SQL is a safe, read-only SELECT statement."""
-    # Must start with SELECT
-    if not re.match(r"^\s*SELECT\b", sql, re.IGNORECASE):
+    """Validate that the SQL is a safe, read-only SELECT statement using AST analysis."""
+    # Parse — reject unparseable SQL immediately.
+    try:
+        statements = sqlglot.parse(sql, dialect="mysql", error_level=sqlglot.ErrorLevel.RAISE)
+    except sqlglot.errors.ParseError:
+        raise HTTPException(status_code=400, detail="Generated SQL could not be parsed.")
+
+    # Reject stacked statements (defense-in-depth against statement-terminator tricks).
+    if len(statements) != 1 or statements[0] is None:
+        raise HTTPException(status_code=400, detail="Only a single SELECT statement is allowed.")
+
+    stmt = statements[0]
+
+    # Must be a top-level SELECT.
+    if not isinstance(stmt, exp.Select):
         raise HTTPException(status_code=400, detail="Only SELECT queries are allowed.")
 
-    # Check for forbidden write operations
-    if FORBIDDEN_PATTERNS.search(sql):
-        raise HTTPException(status_code=400, detail="Query contains forbidden operations.")
+    # Block SELECT ... INTO OUTFILE / INTO DUMPFILE.
+    if stmt.args.get("into"):
+        raise HTTPException(status_code=400, detail="INTO clause is not allowed.")
 
-    # Only allowed tables may appear in FROM / JOIN clauses
-    table_refs = re.findall(r"\b(?:FROM|JOIN)\s+(\w+)", sql, re.IGNORECASE)
-    for table in table_refs:
-        if table.lower() not in ALLOWED_TABLES:
+    # Walk every table reference at any depth: subqueries, CTEs, WHERE EXISTS, etc.
+    # sqlglot normalises backtick-quoted identifiers so `audit_logs` → name="audit_logs".
+    for table in stmt.find_all(exp.Table):
+        if table.db:
+            # Schema-qualified reference: information_schema.columns → db="information_schema".
             raise HTTPException(
                 status_code=400,
-                detail=f"Query references table '{table}' which is not allowed. "
-                       f"Allowed tables: {', '.join(sorted(ALLOWED_TABLES))}.",
+                detail="Schema-qualified table references are not allowed.",
+            )
+        if table.name.lower() not in ALLOWED_TABLES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Table '{table.name}' is not allowed. "
+                       f"Allowed: {', '.join(sorted(ALLOWED_TABLES))}.",
             )
 
-    # Ensure a LIMIT clause exists; if not, append one
-    if not re.search(r"\bLIMIT\s+\d+", sql, re.IGNORECASE):
-        sql = sql.rstrip(";").strip() + f" LIMIT {MAX_ROWS}"
+    # Reject dangerous functions (parsed as Anonymous nodes in sqlglot/MySQL dialect).
+    for node in stmt.find_all(exp.Anonymous):
+        if node.name.lower() in _FORBIDDEN_FUNCS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Function '{node.name}' is not allowed.",
+            )
 
-    # Cap an existing LIMIT if it exceeds MAX_ROWS
-    limit_match = re.search(r"\bLIMIT\s+(\d+)", sql, re.IGNORECASE)
-    if limit_match and int(limit_match.group(1)) > MAX_ROWS:
-        sql = re.sub(r"\bLIMIT\s+\d+", f"LIMIT {MAX_ROWS}", sql, flags=re.IGNORECASE)
+    # Ensure a LIMIT clause exists; cap it at MAX_ROWS if present but too large.
+    limit_node = stmt.find(exp.Limit)
+    if limit_node is None:
+        stmt = stmt.limit(MAX_ROWS)
+    else:
+        try:
+            if int(limit_node.this.this) > MAX_ROWS:
+                limit_node.set("this", exp.Literal.number(MAX_ROWS))
+        except (AttributeError, ValueError, TypeError):
+            limit_node.set("this", exp.Literal.number(MAX_ROWS))
 
-    return sql
+    # Return the AST-regenerated SQL — normalises away encoding tricks.
+    return stmt.sql(dialect="mysql")
+
+
+def _check_quota(db: Session, user_id: int) -> None:
+    """Raise HTTP 429 if this admin has reached their daily NL Query limit."""
+    today = date.today()
+    row = db.execute(
+        select(NlQueryUsage).where(
+            NlQueryUsage.user_id == user_id,
+            NlQueryUsage.query_date == today,
+        )
+    ).scalar_one_or_none()
+
+    limit = settings.nl_query_daily_limit
+    if row is not None and row.count >= limit:
+        midnight = datetime.combine(today + timedelta(days=1), time.min, tzinfo=timezone.utc)
+        retry_after = max(0, int((midnight - datetime.now(timezone.utc)).total_seconds()))
+        raise HTTPException(
+            status_code=429,
+            detail=f"Daily NL Query limit of {limit} reached. Resets at UTC midnight.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+
+def _increment_quota(db: Session, user_id: int) -> None:
+    """Increment this admin's daily NL Query counter (call after successful query)."""
+    today = date.today()
+    row = db.execute(
+        select(NlQueryUsage).where(
+            NlQueryUsage.user_id == user_id,
+            NlQueryUsage.query_date == today,
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        db.add(NlQueryUsage(user_id=user_id, query_date=today, count=1))
+    else:
+        row.count += 1
+
+
+def _check_daily_alert(db: Session) -> None:
+    """Log a warning when total daily NL Query calls across all admins hit the alert threshold."""
+    today = date.today()
+    total = db.execute(
+        text("SELECT COALESCE(SUM(count), 0) FROM nl_query_usage WHERE query_date = :d"),
+        {"d": today},
+    ).scalar() or 0
+
+    threshold = settings.nl_query_alert_threshold
+    if total >= threshold:
+        logger.warning(
+            "NL Query alert: %d total calls today (%s) across all admins has reached the "
+            "configured threshold of %d. Review Anthropic API usage at console.anthropic.com.",
+            total,
+            today,
+            threshold,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +312,7 @@ def query_health_check(
 def natural_language_query(
     payload: NLQueryRequest,
     db: Session = Depends(get_db),
-    _admin: User = Depends(get_current_admin),
+    admin: User = Depends(get_current_admin),
 ):
     question = payload.question.strip()
     if not question:
@@ -232,7 +320,10 @@ def natural_language_query(
     if len(question) > 1000:
         raise HTTPException(status_code=400, detail="Question is too long (max 1000 characters).")
 
-    # Step 1 — Generate SQL from the question
+    # Step 1 — Quota check (before spending Anthropic credits)
+    _check_quota(db, admin.user_id)
+
+    # Step 2 — Generate SQL from the question
     try:
         raw_sql = _generate_sql(question)
     except HTTPException:
@@ -246,7 +337,7 @@ def natural_language_query(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to generate query: {type(e).__name__}: {str(e)}")
 
-    # Step 2 — Validate the generated SQL
+    # Step 3 — Validate the generated SQL
     try:
         safe_sql = _validate_sql(raw_sql)
     except HTTPException:
@@ -254,7 +345,7 @@ def natural_language_query(
     except Exception:
         raise HTTPException(status_code=400, detail="Generated SQL could not be validated.")
 
-    # Step 3 — Execute read-only
+    # Step 4 — Execute read-only; rollback resets transaction state without committing anything
     try:
         result = db.execute(text(safe_sql))
         columns = list(result.keys())
@@ -273,8 +364,19 @@ def natural_language_query(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Query execution failed: {str(e)}")
     finally:
-        # Never commit on this endpoint
-        db.rollback()
+        db.rollback()  # never commit SQL side effects
+
+    # Step 5 — Record quota usage and audit log (after successful execution and rollback)
+    _increment_quota(db, admin.user_id)
+    log_action(
+        db,
+        user_id=admin.user_id,
+        action="nl_query",
+        entity_type="reports",
+        details={"question": question, "sql": safe_sql, "row_count": len(rows)},
+    )
+    db.commit()
+    _check_daily_alert(db)
 
     return NLQueryResponse(
         sql=safe_sql,
