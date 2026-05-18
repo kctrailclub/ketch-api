@@ -152,6 +152,14 @@ class RefreshToken(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
 
+class NlQueryUsage(Base):
+    __tablename__ = "nl_query_usage"
+
+    user_id    = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), primary_key=True, nullable=False)
+    query_date = Column(Date, primary_key=True, nullable=False)
+    count      = Column(Integer, nullable=False, default=0)
+
+
 class RewardEmail(Base):
     __tablename__ = "reward_emails"
 

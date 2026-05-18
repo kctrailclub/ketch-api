@@ -36,6 +36,8 @@ class Settings(BaseSettings):
 
     # Anthropic (for natural language query)
     anthropic_api_key: str | None = None
+    nl_query_daily_limit: int = 50       # max NL Query calls per admin per UTC day
+    nl_query_alert_threshold: int = 100  # log a warning when total daily calls (all admins) hits this
 
     # Environment: "staging" or "production" (controls Swagger docs visibility)
     environment: str = "production"
