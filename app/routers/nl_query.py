@@ -203,10 +203,10 @@ def _validate_sql(sql: str) -> str:
         stmt = stmt.limit(MAX_ROWS)
     else:
         try:
-            if int(limit_node.this.this) > MAX_ROWS:
-                limit_node.set("this", exp.Literal.number(MAX_ROWS))
+            if int(limit_node.expression.this) > MAX_ROWS:
+                limit_node.set("expression", exp.Literal.number(MAX_ROWS))
         except (AttributeError, ValueError, TypeError):
-            limit_node.set("this", exp.Literal.number(MAX_ROWS))
+            limit_node.set("expression", exp.Literal.number(MAX_ROWS))
 
     # Return the AST-regenerated SQL — normalises away encoding tricks.
     return stmt.sql(dialect="mysql")
