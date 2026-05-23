@@ -216,7 +216,13 @@ class StravaConnection(Base):
     updated            = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     user               = relationship("User", foreign_keys=[user_id])
-    trail_completions  = relationship("TrailCompletion", back_populates="connection", cascade="all, delete-orphan")
+    trail_completions  = relationship(
+        "TrailCompletion",
+        primaryjoin="StravaConnection.user_id == TrailCompletion.user_id",
+        foreign_keys="[TrailCompletion.user_id]",
+        back_populates="connection",
+        viewonly=True,
+    )
 
 
 class StravaTrail(Base):
