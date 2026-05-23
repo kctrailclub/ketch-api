@@ -14,3 +14,6 @@ anthropic>=0.39.0
 sqlglot==30.8.0
 pywebpush>=2.3.0
 requests>=2.31.0
+shapely>=2.0
+polyline>=2.0
+apscheduler>=3.10
