@@ -68,52 +68,20 @@ def _build_line(coords) -> Optional[LineString]:
 _SIMPLIFY_TOLERANCE_M = 3.0   # metres; well within the 15 m buffer — no coverage impact
 
 
-def _build_activity_index(polylines: list) -> STRtree | None:
-    """Decode activity polylines and load them into an STRtree spatial index.
-    Returns an STRtree, or None if no valid lines were decoded.
-
-    Uses an STRtree instead of unary_union().buffer() to avoid building a
-    massive buffered polygon — buffering the union of 500 polylines produces
-    a polygon with 100k+ vertices that exhausts Railway container memory.
-    The STRtree stores the simplified lines themselves; coverage checks use
-    point.distance(nearest_line) <= buffer_m instead of polygon.contains(point)."""
-    lines = []
-    for p in polylines:
-        try:
-            coords = polyline_codec.decode(p)
-            line = _build_line(coords)
-            if line:
-                lines.append(line.simplify(_SIMPLIFY_TOLERANCE_M))
-        except Exception:
-            continue
-    if not lines:
-        return None
-    return STRtree(lines)
-
-
-def _coverage(trail_json: str, activity_index: STRtree | None,
-              buffer_m: float, threshold_pct: float) -> bool:
-    """Return True if activity lines cover >= threshold_pct of the trail geometry
-    (sampled every 5 m). For each sample point, queries the STRtree for candidate
-    lines within buffer_m and checks actual point-to-line distance."""
-    if activity_index is None:
-        return False
+def _trail_sample_points(trail_json: str, step_m: float = 15.0) -> list:
+    """Return projected Shapely Points sampled every step_m metres along the trail.
+    step_m defaults to 15 m (= buffer radius) — sufficient to detect any gap wider
+    than the buffer. Returns [] if geometry is missing or invalid."""
     try:
-        trail_coords = json.loads(trail_json)
+        coords = json.loads(trail_json)
     except Exception:
-        return False
-    trail_line = _build_line(trail_coords)
-    if not trail_line:
-        return False
-    n = max(20, int(trail_line.length / 5.0))
-    covered = 0
-    for i in range(n + 1):
-        pt = trail_line.interpolate(i / n, normalized=True)
-        # STRtree.query with 'dwithin' predicate returns indices of lines
-        # within buffer_m of pt — no explicit polygon needed.
-        if len(activity_index.query(pt, predicate="dwithin", distance=buffer_m)) > 0:
-            covered += 1
-    return (covered / (n + 1)) >= (threshold_pct / 100.0)
+        return []
+    line = _build_line(coords)
+    if not line:
+        return []
+    n = max(10, int(line.length / step_m))
+    return [line.interpolate(i / n, normalized=True) for i in range(n + 1)]
+
 
 
 def _parse_gpx_bytes(raw: bytes) -> list:
@@ -230,10 +198,12 @@ def _strava_get(token: str, path: str, params: dict = None):
 
 def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: int = 5) -> int:
     """Sync one member's trail completions.
-    Fetches Strava activities since challenge_start_date, checks coverage for each
-    active trail with geometry. Returns count of newly-completed trails.
-    max_pages=5 for member-triggered syncs (~500 activities, stays under 60s);
-    max_pages=20 for the nightly scheduler (full history, no timeout pressure).
+    Processes Strava activities one page at a time (<=100 per page) to keep peak
+    memory flat regardless of history depth. For each page, an STRtree is built
+    over that page's decoded polylines, used to mark covered trail sample points,
+    then released. Peak memory = one page of lines + trail sample points (not all
+    pages at once).
+    max_pages=5 for member-triggered syncs; max_pages=20 for the nightly scheduler.
     """
     challenge_start_str = _get_setting(db, "challenge_start_date", "2026-01-01")
     try:
@@ -246,8 +216,18 @@ def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: i
 
     token = _refresh_token_if_needed(db, conn)
 
-    # Collect activity summary_polylines since challenge start
-    polylines = []
+    # Pre-compute sample points for each trail with geometry (done once, kept small).
+    trail_samples: dict = {}
+    for trail in trails:
+        if trail.geometry:
+            pts = _trail_sample_points(trail.geometry, step_m=buffer_m)
+            if pts:
+                trail_samples[trail.trail_id] = pts
+
+    # covered[trail_id] = set of covered sample-point indices, accumulated across pages.
+    covered: dict = {tid: set() for tid in trail_samples}
+
+    # Stream activities page by page — only one page of lines in memory at a time.
     page = 1
     after_ts = int(challenge_start.timestamp())
     while page <= max_pages:
@@ -258,30 +238,51 @@ def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: i
         })
         if not activities:
             break
+
+        page_lines = []
         for act in activities:
             poly = act.get("map", {}).get("summary_polyline") or ""
             if poly:
-                polylines.append(poly)
+                try:
+                    coords = polyline_codec.decode(poly)
+                    line = _build_line(coords)
+                    if line:
+                        page_lines.append(line.simplify(_SIMPLIFY_TOLERANCE_M))
+                except Exception:
+                    pass
+
+        if page_lines:
+            tree = STRtree(page_lines)
+            for trail_id, sample_pts in trail_samples.items():
+                for i, pt in enumerate(sample_pts):
+                    if i not in covered[trail_id]:
+                        if len(tree.query(pt, predicate="dwithin", distance=buffer_m)) > 0:
+                            covered[trail_id].add(i)
+            # tree and page_lines released here.
+
         if len(activities) < 100:
             break
         page += 1
 
     now = datetime.now(timezone.utc)
     newly_completed = 0
-
-    # Build spatial index once; reused for all 34 trail coverage checks.
-    activity_index = _build_activity_index(polylines)
+    threshold = threshold_pct / 100.0
 
     for trail in trails:
         if not trail.geometry:
             continue  # No geometry — skip; admin must upload it
 
+        if trail.trail_id in trail_samples:
+            n_total = len(trail_samples[trail.trail_id])
+            n_covered = len(covered[trail.trail_id])
+            is_done = n_total > 0 and (n_covered / n_total) >= threshold
+        else:
+            is_done = False
+
         existing = db.query(TrailCompletion).filter(
             TrailCompletion.user_id == conn.user_id,
             TrailCompletion.trail_id == trail.trail_id,
         ).first()
-
-        is_done = _coverage(trail.geometry, activity_index, buffer_m, threshold_pct)
 
         if existing:
             if existing.completed != int(is_done):
