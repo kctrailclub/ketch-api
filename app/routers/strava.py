@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from pydantic import BaseModel
 from shapely.geometry import LineString
 from shapely.strtree import STRtree
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -196,14 +197,28 @@ def _strava_get(token: str, path: str, params: dict = None):
 # Sync logic
 # ---------------------------------------------------------------------------
 
-def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: int = 5) -> int:
+def _sync_member(
+    db: Session,
+    conn: StravaConnection,
+    trails: list,
+    max_pages: int = 5,
+    after_override: Optional[datetime] = None,
+    incomplete_only: bool = False,
+) -> int:
     """Sync one member's trail completions.
-    Processes Strava activities one page at a time (<=100 per page) to keep peak
+
+    Processes Strava activities one page at a time (≤100 per page) to keep peak
     memory flat regardless of history depth. For each page, an STRtree is built
     over that page's decoded polylines, used to mark covered trail sample points,
     then released. Peak memory = one page of lines + trail sample points (not all
     pages at once).
-    max_pages=5 for member-triggered syncs; max_pages=20 for the nightly scheduler.
+
+    after_override: when provided, only Strava activities after this timestamp are
+        fetched. The nightly scheduler passes MAX(last_synced) per member so only
+        new activities since the previous run are checked.
+    incomplete_only: when True, trails already marked completed are skipped entirely.
+        Combined with after_override for the nightly scheduler: zero API calls if
+        the member has already completed every trail.
     """
     challenge_start_str = _get_setting(db, "challenge_start_date", "2026-01-01")
     try:
@@ -216,20 +231,47 @@ def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: i
 
     token = _refresh_token_if_needed(db, conn)
 
+    # If incremental mode, skip trails already completed — no point re-checking them.
+    if incomplete_only:
+        completed_trail_ids = {
+            row.trail_id
+            for row in db.query(TrailCompletion).filter(
+                TrailCompletion.user_id == conn.user_id,
+                TrailCompletion.completed == 1,
+            ).all()
+        }
+        trails_to_check = [t for t in trails if t.trail_id not in completed_trail_ids]
+        if not trails_to_check:
+            return 0  # All trails already complete — nothing to do
+    else:
+        trails_to_check = trails
+
+    # Determine the earliest activity timestamp to fetch from Strava.
+    if after_override is not None:
+        after_dt = (
+            after_override if after_override.tzinfo else
+            after_override.replace(tzinfo=timezone.utc)
+        )
+        after_ts = int(after_dt.timestamp())
+    else:
+        after_ts = int(challenge_start.timestamp())
+
     # Pre-compute sample points for each trail with geometry (done once, kept small).
     trail_samples: dict = {}
-    for trail in trails:
+    for trail in trails_to_check:
         if trail.geometry:
             pts = _trail_sample_points(trail.geometry, step_m=buffer_m)
             if pts:
                 trail_samples[trail.trail_id] = pts
+
+    if not trail_samples:
+        return 0  # No geometry to check
 
     # covered[trail_id] = set of covered sample-point indices, accumulated across pages.
     covered: dict = {tid: set() for tid in trail_samples}
 
     # Stream activities page by page — only one page of lines in memory at a time.
     page = 1
-    after_ts = int(challenge_start.timestamp())
     while page <= max_pages:
         activities = _strava_get(token, "/athlete/activities", params={
             "per_page": 100,
@@ -268,7 +310,7 @@ def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: i
     newly_completed = 0
     threshold = threshold_pct / 100.0
 
-    for trail in trails:
+    for trail in trails_to_check:
         if not trail.geometry:
             continue  # No geometry — skip; admin must upload it
 
@@ -303,13 +345,30 @@ def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: i
 
 
 def _sync_all_members(db: Session):
-    """Called by APScheduler daily at 03:00 UTC. Sync all connected members."""
+    """Called by APScheduler daily at 03:00 UTC. Incremental sync for all connected members.
+
+    Uses MAX(last_synced) per member as the 'after' cutoff — only activities since the
+    previous nightly run are fetched. Already-completed trails are skipped entirely.
+    A new member with no trail_completions rows falls back to full history from
+    challenge_start_date. At 550 members this stays well within Strava's 3,000 req/day
+    rate limit (~550–1,100 calls/night vs. up to 11,000 with a full nightly scan).
+    """
     trails = db.query(StravaTrail).filter(StravaTrail.is_active == 1).all()
     connections = db.query(StravaConnection).all()
 
     for conn in connections:
         try:
-            _sync_member(db, conn, trails, max_pages=20)
+            last_synced = (
+                db.query(func.max(TrailCompletion.last_synced))
+                .filter(TrailCompletion.user_id == conn.user_id)
+                .scalar()
+            )
+            _sync_member(
+                db, conn, trails,
+                max_pages=5,
+                after_override=last_synced,   # None on first run → full history
+                incomplete_only=True,
+            )
         except Exception as exc:
             log.error("Sync failed for user_id=%s: %s", conn.user_id, exc)
 
