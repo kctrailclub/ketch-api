@@ -11,7 +11,7 @@ import requests as http_requests
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel
 from shapely.geometry import LineString
-from shapely.ops import unary_union
+from shapely.strtree import STRtree
 from sqlalchemy.orm import Session
 
 from app.core.audit import log_action
@@ -67,33 +67,36 @@ def _build_line(coords) -> Optional[LineString]:
 
 _SIMPLIFY_TOLERANCE_M = 3.0   # metres; well within the 15 m buffer — no coverage impact
 
-def _build_buffered_union(polylines: list, buffer_m: float):
-    """Decode activity polylines, union them, and buffer by buffer_m metres.
-    Returns a Shapely geometry, or None if no valid lines were decoded.
-    Call once per sync; reuse the result across all trail coverage checks.
 
-    Each line is simplified to _SIMPLIFY_TOLERANCE_M before union to keep
-    vertex count manageable on memory-constrained Railway containers.
-    A 3 m simplification tolerance has no practical effect on a 15 m buffer."""
-    activity_lines = []
+def _build_activity_index(polylines: list) -> STRtree | None:
+    """Decode activity polylines and load them into an STRtree spatial index.
+    Returns an STRtree, or None if no valid lines were decoded.
+
+    Uses an STRtree instead of unary_union().buffer() to avoid building a
+    massive buffered polygon — buffering the union of 500 polylines produces
+    a polygon with 100k+ vertices that exhausts Railway container memory.
+    The STRtree stores the simplified lines themselves; coverage checks use
+    point.distance(nearest_line) <= buffer_m instead of polygon.contains(point)."""
+    lines = []
     for p in polylines:
         try:
             coords = polyline_codec.decode(p)
             line = _build_line(coords)
             if line:
-                activity_lines.append(line.simplify(_SIMPLIFY_TOLERANCE_M))
+                lines.append(line.simplify(_SIMPLIFY_TOLERANCE_M))
         except Exception:
             continue
-    if not activity_lines:
+    if not lines:
         return None
-    return unary_union(activity_lines).buffer(buffer_m)
+    return STRtree(lines)
 
 
-def _coverage(trail_json: str, buffered_union, threshold_pct: float) -> bool:
-    """Return True if buffered_union covers >= threshold_pct of the trail geometry
-    (sampled every 5 m). Pass the result of _build_buffered_union(); returns False
-    immediately if buffered_union is None (no activities)."""
-    if buffered_union is None:
+def _coverage(trail_json: str, activity_index: STRtree | None,
+              buffer_m: float, threshold_pct: float) -> bool:
+    """Return True if activity lines cover >= threshold_pct of the trail geometry
+    (sampled every 5 m). For each sample point, queries the STRtree for candidate
+    lines within buffer_m and checks actual point-to-line distance."""
+    if activity_index is None:
         return False
     try:
         trail_coords = json.loads(trail_json)
@@ -103,10 +106,13 @@ def _coverage(trail_json: str, buffered_union, threshold_pct: float) -> bool:
     if not trail_line:
         return False
     n = max(20, int(trail_line.length / 5.0))
-    covered = sum(
-        1 for i in range(n + 1)
-        if buffered_union.contains(trail_line.interpolate(i / n, normalized=True))
-    )
+    covered = 0
+    for i in range(n + 1):
+        pt = trail_line.interpolate(i / n, normalized=True)
+        # STRtree.query with 'dwithin' predicate returns indices of lines
+        # within buffer_m of pt — no explicit polygon needed.
+        if len(activity_index.query(pt, predicate="dwithin", distance=buffer_m)) > 0:
+            covered += 1
     return (covered / (n + 1)) >= (threshold_pct / 100.0)
 
 
@@ -263,8 +269,8 @@ def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: i
     now = datetime.now(timezone.utc)
     newly_completed = 0
 
-    # Build the buffered union once; reused for all 34 trail coverage checks.
-    buffered_union = _build_buffered_union(polylines, buffer_m)
+    # Build spatial index once; reused for all 34 trail coverage checks.
+    activity_index = _build_activity_index(polylines)
 
     for trail in trails:
         if not trail.geometry:
@@ -275,7 +281,7 @@ def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: i
             TrailCompletion.trail_id == trail.trail_id,
         ).first()
 
-        is_done = _coverage(trail.geometry, buffered_union, threshold_pct)
+        is_done = _coverage(trail.geometry, activity_index, buffer_m, threshold_pct)
 
         if existing:
             if existing.completed != int(is_done):
