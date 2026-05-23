@@ -1,10 +1,47 @@
+import logging
 import os
+from contextlib import asynccontextmanager
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
-from app.routers import audit, auth, households, hours, nl_query, notifications, projects, push, resources, users, registrations
+from app.core.database import SessionLocal
+from app.routers import audit, auth, households, hours, nl_query, notifications, projects, push, resources, strava, users, registrations
 from app.routers import settings as settings_router
+
+log = logging.getLogger(__name__)
+
+
+def _run_daily_sync():
+    """APScheduler job: sync all connected members' trail completions."""
+    from app.routers.strava import _sync_all_members
+    db = SessionLocal()
+    try:
+        _sync_all_members(db)
+    except Exception as exc:
+        log.error("Daily Trails Challenge sync failed: %s", exc)
+    finally:
+        db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(
+        _run_daily_sync,
+        CronTrigger(hour=3, minute=0, timezone="UTC"),
+        id="daily_trails_sync",
+        replace_existing=True,
+    )
+    scheduler.start()
+    log.info("APScheduler started — daily Trails Challenge sync at 03:00 UTC")
+    yield
+    scheduler.shutdown(wait=False)
+    log.info("APScheduler stopped")
+
 
 # Swagger UI enabled on staging only; disabled in production for security.
 # To re-enable: set ENVIRONMENT=staging in Railway env vars.
@@ -16,6 +53,7 @@ app = FastAPI(
     version="1.0.0",
     docs_url="/docs" if _enable_docs else None,
     redoc_url="/redoc" if _enable_docs else None,
+    lifespan=lifespan,
 )
 
 # CORS -- origins controlled by environment variables.

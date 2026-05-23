@@ -201,6 +201,62 @@ class PushSubscription(Base):
     user            = relationship("User", foreign_keys=[user_id])
 
 
+class StravaConnection(Base):
+    __tablename__ = "strava_connections"
+
+    connection_id      = Column(Integer, primary_key=True, autoincrement=True)
+    user_id            = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False, unique=True)
+    strava_athlete_id  = Column(BigInteger, nullable=False, unique=True)
+    access_token       = Column(String(255), nullable=False)
+    refresh_token      = Column(String(255), nullable=False)
+    token_expires_at   = Column(DateTime, nullable=False)
+    athlete_firstname  = Column(String(100), nullable=True)
+    athlete_lastname   = Column(String(100), nullable=True)
+    created            = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated            = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    user               = relationship("User", foreign_keys=[user_id])
+    trail_completions  = relationship("TrailCompletion", back_populates="connection", cascade="all, delete-orphan")
+
+
+class StravaTrail(Base):
+    __tablename__ = "strava_trails"
+
+    trail_id       = Column(Integer, primary_key=True, autoincrement=True)
+    name           = Column(String(200), nullable=False)
+    distance_miles = Column(Numeric(6, 3), nullable=True)
+    elevation_feet = Column(Integer, nullable=True)
+    geometry       = Column(Text, nullable=True)          # JSON [[lat,lon],…] from GPX
+    sort_order     = Column(Integer, nullable=False, default=0)
+    is_active      = Column(Integer, nullable=False, default=1)
+    created_by     = Column(Integer, ForeignKey("users.user_id", ondelete="SET NULL"), nullable=True)
+    created        = Column(DateTime, nullable=False, default=datetime.utcnow)
+    updated        = Column(DateTime, nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    author         = relationship("User", foreign_keys=[created_by])
+    completions    = relationship("TrailCompletion", back_populates="trail", cascade="all, delete-orphan")
+
+
+class TrailCompletion(Base):
+    __tablename__ = "trail_completions"
+
+    completion_id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id       = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
+    trail_id      = Column(Integer, ForeignKey("strava_trails.trail_id", ondelete="CASCADE"), nullable=False)
+    completed     = Column(Integer, nullable=False, default=0)   # 0/1 boolean
+    last_synced   = Column(DateTime, nullable=True)
+
+    connection    = relationship(
+        "StravaConnection",
+        primaryjoin="TrailCompletion.user_id == StravaConnection.user_id",
+        foreign_keys="TrailCompletion.user_id",
+        back_populates="trail_completions",
+        viewonly=True,
+    )
+    trail         = relationship("StravaTrail", foreign_keys=[trail_id], back_populates="completions")
+
+
+
 class ResourceSponsor(Base):
     __tablename__ = "resource_sponsors"
 
