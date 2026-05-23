@@ -209,10 +209,12 @@ def _strava_get(token: str, path: str, params: dict = None):
 # Sync logic
 # ---------------------------------------------------------------------------
 
-def _sync_member(db: Session, conn: StravaConnection, trails: list) -> int:
+def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: int = 5) -> int:
     """Sync one member's trail completions.
     Fetches Strava activities since challenge_start_date, checks coverage for each
     active trail with geometry. Returns count of newly-completed trails.
+    max_pages=5 for member-triggered syncs (~500 activities, stays under 60s);
+    max_pages=20 for the nightly scheduler (full history, no timeout pressure).
     """
     challenge_start_str = _get_setting(db, "challenge_start_date", "2026-01-01")
     try:
@@ -225,11 +227,11 @@ def _sync_member(db: Session, conn: StravaConnection, trails: list) -> int:
 
     token = _refresh_token_if_needed(db, conn)
 
-    # Collect all activity summary_polylines since challenge start
+    # Collect activity summary_polylines since challenge start
     polylines = []
     page = 1
     after_ts = int(challenge_start.timestamp())
-    while page <= 20:
+    while page <= max_pages:
         activities = _strava_get(token, "/athlete/activities", params={
             "per_page": 100,
             "page": page,
@@ -284,7 +286,7 @@ def _sync_all_members(db: Session):
 
     for conn in connections:
         try:
-            _sync_member(db, conn, trails)
+            _sync_member(db, conn, trails, max_pages=20)
         except Exception as exc:
             log.error("Sync failed for user_id=%s: %s", conn.user_id, exc)
 
