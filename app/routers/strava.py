@@ -416,6 +416,8 @@ def disconnect_strava(
     except Exception:
         pass
 
+    # Delete trail completions before removing the connection (no direct FK cascade)
+    db.query(TrailCompletion).filter(TrailCompletion.user_id == current_user.user_id).delete()
     db.delete(conn)
     log_action(db, user_id=current_user.user_id, action="strava_disconnect", entity_type="strava",
                entity_id=current_user.user_id,
