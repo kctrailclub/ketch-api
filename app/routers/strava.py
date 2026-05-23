@@ -31,6 +31,8 @@ STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token"
 STRAVA_DEAUTH_URL = "https://www.strava.com/oauth/deauthorize"
 STRAVA_API_BASE  = "https://www.strava.com/api/v3"
 
+GPX_MAX_BYTES = 20 * 1024 * 1024  # 20 MB; master file is 5.5 MB
+
 # ---------------------------------------------------------------------------
 # Equirectangular projection constants (Ken-Caryl area, anchored at 39.5°N)
 # ---------------------------------------------------------------------------
@@ -63,18 +65,10 @@ def _build_line(coords) -> Optional[LineString]:
     return LineString(pts)
 
 
-def _coverage(trail_json: str, polylines: list, buffer_m: float, threshold_pct: float) -> bool:
-    """Return True if the union of decoded activity polylines covers >= threshold_pct
-    of the trail geometry (sampled every 5 m after buffering by buffer_m metres)."""
-    try:
-        trail_coords = json.loads(trail_json)
-    except Exception:
-        return False
-
-    trail_line = _build_line(trail_coords)
-    if not trail_line:
-        return False
-
+def _build_buffered_union(polylines: list, buffer_m: float):
+    """Decode activity polylines, union them, and buffer by buffer_m metres.
+    Returns a Shapely geometry, or None if no valid lines were decoded.
+    Call once per sync; reuse the result across all trail coverage checks."""
     activity_lines = []
     for p in polylines:
         try:
@@ -84,15 +78,28 @@ def _coverage(trail_json: str, polylines: list, buffer_m: float, threshold_pct: 
                 activity_lines.append(line)
         except Exception:
             continue
-
     if not activity_lines:
-        return False
+        return None
+    return unary_union(activity_lines).buffer(buffer_m)
 
-    buffered = unary_union(activity_lines).buffer(buffer_m)
+
+def _coverage(trail_json: str, buffered_union, threshold_pct: float) -> bool:
+    """Return True if buffered_union covers >= threshold_pct of the trail geometry
+    (sampled every 5 m). Pass the result of _build_buffered_union(); returns False
+    immediately if buffered_union is None (no activities)."""
+    if buffered_union is None:
+        return False
+    try:
+        trail_coords = json.loads(trail_json)
+    except Exception:
+        return False
+    trail_line = _build_line(trail_coords)
+    if not trail_line:
+        return False
     n = max(20, int(trail_line.length / 5.0))
     covered = sum(
         1 for i in range(n + 1)
-        if buffered.contains(trail_line.interpolate(i / n, normalized=True))
+        if buffered_union.contains(trail_line.interpolate(i / n, normalized=True))
     )
     return (covered / (n + 1)) >= (threshold_pct / 100.0)
 
@@ -250,6 +257,9 @@ def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: i
     now = datetime.now(timezone.utc)
     newly_completed = 0
 
+    # Build the buffered union once; reused for all 34 trail coverage checks.
+    buffered_union = _build_buffered_union(polylines, buffer_m)
+
     for trail in trails:
         if not trail.geometry:
             continue  # No geometry — skip; admin must upload it
@@ -259,7 +269,7 @@ def _sync_member(db: Session, conn: StravaConnection, trails: list, max_pages: i
             TrailCompletion.trail_id == trail.trail_id,
         ).first()
 
-        is_done = _coverage(trail.geometry, polylines, buffer_m, threshold_pct)
+        is_done = _coverage(trail.geometry, buffered_union, threshold_pct)
 
         if existing:
             if existing.completed != int(is_done):
@@ -530,7 +540,9 @@ async def gpx_preview(
     _admin: User = Depends(get_current_admin),
 ):
     """Parse a GPX file and return the list of named tracks. No DB writes."""
-    raw = await file.read()
+    raw = await file.read(GPX_MAX_BYTES + 1)
+    if len(raw) > GPX_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="GPX file exceeds 20 MB limit")
     trails = _parse_gpx_bytes(raw)
 
     return {
@@ -558,7 +570,9 @@ async def gpx_import(
     dicts identifying which GPX tracks to import and their admin-confirmed metadata.
     Existing trails with matching names have their geometry updated; new rows are created.
     """
-    raw = await file.read()
+    raw = await file.read(GPX_MAX_BYTES + 1)
+    if len(raw) > GPX_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="GPX file exceeds 20 MB limit")
     gpx_trails = _parse_gpx_bytes(raw)
 
     try:
@@ -630,7 +644,9 @@ async def upload_trail_geometry(
     if not trail:
         raise HTTPException(status_code=404, detail="Trail not found")
 
-    raw = await file.read()
+    raw = await file.read(GPX_MAX_BYTES + 1)
+    if len(raw) > GPX_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="GPX file exceeds 20 MB limit")
     gpx_trails = _parse_gpx_bytes(raw)
 
     if not gpx_trails:
