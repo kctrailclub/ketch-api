@@ -65,17 +65,23 @@ def _build_line(coords) -> Optional[LineString]:
     return LineString(pts)
 
 
+_SIMPLIFY_TOLERANCE_M = 3.0   # metres; well within the 15 m buffer — no coverage impact
+
 def _build_buffered_union(polylines: list, buffer_m: float):
     """Decode activity polylines, union them, and buffer by buffer_m metres.
     Returns a Shapely geometry, or None if no valid lines were decoded.
-    Call once per sync; reuse the result across all trail coverage checks."""
+    Call once per sync; reuse the result across all trail coverage checks.
+
+    Each line is simplified to _SIMPLIFY_TOLERANCE_M before union to keep
+    vertex count manageable on memory-constrained Railway containers.
+    A 3 m simplification tolerance has no practical effect on a 15 m buffer."""
     activity_lines = []
     for p in polylines:
         try:
             coords = polyline_codec.decode(p)
             line = _build_line(coords)
             if line:
-                activity_lines.append(line)
+                activity_lines.append(line.simplify(_SIMPLIFY_TOLERANCE_M))
         except Exception:
             continue
     if not activity_lines:
