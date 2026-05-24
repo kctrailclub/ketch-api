@@ -104,7 +104,7 @@ def create_user(
         phone=payload.phone,
         password_hash="",          # empty until they accept the invite
         is_admin=int(payload.is_admin),
-        is_active=0,               # inactive until they set a password
+        is_active=1,
         youth=int(payload.youth),
         is_tester=int(payload.is_tester),
         waiver=date_type.fromisoformat(payload.waiver) if payload.waiver else None,
