@@ -83,6 +83,7 @@ app.include_router(nl_query.router)
 app.include_router(audit.router)
 app.include_router(push.router)
 app.include_router(resources.router)
+app.include_router(strava.router)
 
 
 @app.get("/health")
