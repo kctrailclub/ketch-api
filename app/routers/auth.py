@@ -124,10 +124,13 @@ def login(payload: LoginRequest, request: Request, response: Response, db: Sessi
     return TokenResponse(access_token=create_access_token(user.user_id))
 
 
+_refresh_log = logging.getLogger("kctc.auth.refresh")
+
 @router.post("/refresh", response_model=TokenResponse)
 def refresh(request: Request, response: Response, db: Session = Depends(get_db)):
     origin = request.headers.get("origin")
     if not origin or origin not in _allowed_origins():
+        _refresh_log.warning("DIAG refresh 401: bad origin — got=%r allowed=%r", origin, _allowed_origins())
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or missing origin",
@@ -135,6 +138,7 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
 
     raw_refresh = request.cookies.get(REFRESH_COOKIE_NAME)
     if not raw_refresh:
+        _refresh_log.warning("DIAG refresh 401: missing cookie — origin=%r cookies=%r", origin, list(request.cookies.keys()))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing refresh token",
@@ -155,6 +159,7 @@ def refresh(request: Request, response: Response, db: Session = Depends(get_db))
         if token_row:
             db.delete(token_row)
             db.commit()
+        _refresh_log.warning("DIAG refresh 401: invalid/expired token — origin=%r found=%r expired=%r", origin, token_row is not None, expired)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired refresh token",
