@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     # Strava
     strava_client_id: str | None = None
     strava_client_secret: str | None = None
+    strava_webhook_verify_token: str | None = None
 
     # Environment: "staging" or "production" (controls Swagger docs visibility)
     environment: str = "production"
