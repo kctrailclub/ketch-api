@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 
 import polyline as polyline_codec
 import requests as http_requests
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel
 from shapely.geometry import LineString
 from shapely.strtree import STRtree
@@ -486,6 +486,15 @@ def get_connection(
     }
 
 
+def _delete_member_connection(db: Session, conn: StravaConnection, summary: str) -> None:
+    """Delete all trail completions and the Strava connection row, then commit."""
+    db.query(TrailCompletion).filter(TrailCompletion.user_id == conn.user_id).delete()
+    db.delete(conn)
+    log_action(db, user_id=conn.user_id, action="strava_disconnect", entity_type="strava",
+               entity_id=conn.user_id, details={"summary": summary})
+    db.commit()
+
+
 @router.delete("/connection")
 def disconnect_strava(
     db: Session = Depends(get_db),
@@ -500,14 +509,65 @@ def disconnect_strava(
     except Exception:
         pass
 
-    # Delete trail completions before removing the connection (no direct FK cascade)
-    db.query(TrailCompletion).filter(TrailCompletion.user_id == current_user.user_id).delete()
-    db.delete(conn)
-    log_action(db, user_id=current_user.user_id, action="strava_disconnect", entity_type="strava",
-               entity_id=current_user.user_id,
-               details={"summary": f"{current_user.firstname} {current_user.lastname} disconnected Strava"})
-    db.commit()
+    _delete_member_connection(
+        db, conn,
+        summary=f"{current_user.firstname} {current_user.lastname} disconnected Strava",
+    )
     return {"detail": "Strava disconnected"}
+
+
+# ---------------------------------------------------------------------------
+# Webhook Endpoints (Strava subscription events)
+# ---------------------------------------------------------------------------
+
+@router.get("/webhook")
+async def strava_webhook_verify(request: Request):
+    """Strava webhook subscription verification (hub challenge handshake).
+
+    Strava GETs this endpoint during subscription setup and expects the
+    hub.challenge echoed back. Requires STRAVA_WEBHOOK_VERIFY_TOKEN to match.
+    """
+    params = dict(request.query_params)
+    if (
+        params.get("hub.mode") == "subscribe"
+        and settings.strava_webhook_verify_token
+        and params.get("hub.verify_token") == settings.strava_webhook_verify_token
+    ):
+        return {"hub.challenge": params.get("hub.challenge", "")}
+    raise HTTPException(status_code=403, detail="Webhook verification failed")
+
+
+@router.post("/webhook", status_code=200)
+async def strava_webhook_event(request: Request, db: Session = Depends(get_db)):
+    """Handle Strava webhook events (deauthorization only; other types silently ignored).
+
+    FR-13: when a member revokes the KCTC app from Strava.com, Strava sends a
+    deauthorization event here. The handler deletes the strava_connections row and
+    all trail_completions rows for that athlete, mirroring the in-app disconnect path.
+    Always returns 200 — Strava will retry on non-200 responses.
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        return {"status": "ok"}
+
+    if (
+        body.get("object_type") == "athlete"
+        and body.get("updates", {}).get("authorized") == "false"
+    ):
+        athlete_id = body.get("owner_id") or body.get("object_id")
+        if athlete_id:
+            conn = db.query(StravaConnection).filter(
+                StravaConnection.strava_athlete_id == athlete_id,
+            ).first()
+            if conn:
+                _delete_member_connection(
+                    db, conn,
+                    summary=f"Strava deauthorization webhook for athlete_id={athlete_id}",
+                )
+                log.info("Strava webhook: removed connection for athlete_id=%s", athlete_id)
+
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------

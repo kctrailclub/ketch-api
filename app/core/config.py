@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     nl_query_daily_limit: int = 50       # max NL Query calls per admin per UTC day
     nl_query_alert_threshold: int = 100  # log a warning when total daily calls (all admins) hits this
 
+    # Strava
+    strava_client_id: str | None = None
+    strava_client_secret: str | None = None
+    strava_webhook_verify_token: str | None = None
+
+
     # Environment: "staging" or "production" (controls Swagger docs visibility)
     environment: str = "production"
 
