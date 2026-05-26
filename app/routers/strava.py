@@ -318,8 +318,10 @@ def _sync_member(
             n_total = len(trail_samples[trail.trail_id])
             n_covered = len(covered[trail.trail_id])
             is_done = n_total > 0 and (n_covered / n_total) >= threshold
+            pct = round((n_covered / n_total) * 100, 1) if n_total > 0 else 0.0
         else:
             is_done = False
+            pct = None
 
         existing = db.query(TrailCompletion).filter(
             TrailCompletion.user_id == conn.user_id,
@@ -329,12 +331,14 @@ def _sync_member(
         if existing:
             if existing.completed != int(is_done):
                 existing.completed = int(is_done)
+            existing.coverage_pct = pct
             existing.last_synced = now
         else:
             db.add(TrailCompletion(
                 user_id=conn.user_id,
                 trail_id=trail.trail_id,
                 completed=int(is_done),
+                coverage_pct=pct,
                 last_synced=now,
             ))
             if is_done:
@@ -363,10 +367,17 @@ def _sync_all_members(db: Session):
                 .filter(TrailCompletion.user_id == conn.user_id)
                 .scalar()
             )
+            # Use incremental window only when all trails are already complete.
+            # For members with any incomplete trail, always scan from challenge_start
+            # so coverage from activities across different sync windows accumulates correctly.
+            has_incomplete = db.query(TrailCompletion).filter(
+                TrailCompletion.user_id == conn.user_id,
+                TrailCompletion.completed == 0,
+            ).first() is not None
             _sync_member(
                 db, conn, trails,
                 max_pages=5,
-                after_override=last_synced,   # None on first run → full history
+                after_override=None if has_incomplete else last_synced,
                 incomplete_only=True,
             )
         except Exception as exc:
@@ -900,6 +911,7 @@ def get_trails_challenge(
             "elevation_feet": t.elevation_feet,
             "has_geometry":   t.geometry is not None,
             "is_completed":   is_completed,
+            "coverage_pct":   float(row.coverage_pct) if (row and row.coverage_pct is not None) else None,
             "last_synced":    last_synced,
         })
 
