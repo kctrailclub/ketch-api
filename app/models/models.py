@@ -250,6 +250,7 @@ class TrailCompletion(Base):
     user_id       = Column(Integer, ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False)
     trail_id      = Column(Integer, ForeignKey("strava_trails.trail_id", ondelete="CASCADE"), nullable=False)
     completed     = Column(Integer, nullable=False, default=0)   # 0/1 boolean
+    coverage_pct  = Column(Numeric(5, 2), nullable=True)
     last_synced   = Column(DateTime, nullable=True)
 
     connection    = relationship(

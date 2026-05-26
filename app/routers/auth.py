@@ -74,7 +74,7 @@ def _set_refresh_cookie(response: Response, raw_refresh: str) -> None:
         path=REFRESH_COOKIE_PATH,
         secure=True,
         httponly=True,
-        samesite="none",
+        samesite="lax",
     )
 
 
