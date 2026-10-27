@@ -88,4 +88,10 @@ app.include_router(strava.router)
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    # `sha` is the commit Railway built from (RAILWAY_GIT_COMMIT_SHA). The deploy-verify
+    # GitHub Actions workflow compares it to origin/main — Deploy Sign-off Checks 1 + 2.
+    return {
+        "status": "ok",
+        "sha": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown"),
+        "environment": settings.environment,
+    }

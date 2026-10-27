@@ -29,7 +29,9 @@ class TestLoginIssuesCookie:
         lc = set_cookie.lower()
         assert "httponly" in lc
         assert "secure" in lc
-        assert "samesite=none" in lc
+        # RP-0001 (ketch-api 3bcf6d8, 2026-05-24): cookie moved SameSite=None -> Lax once the API
+        # was served from api.kctrailclub.org (same-site). The test lagged the change until 2026-10-26.
+        assert "samesite=lax" in lc
         assert f"path={REFRESH_COOKIE_PATH}".lower() in lc
         assert "max-age=" in lc
 
