@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     strava_webhook_verify_token: str | None = None
 
 
+    # Request-body cap (SEC-0026): requests whose Content-Length exceeds this are rejected
+    # with 413 before routing/parsing. Largest legitimate upload is a GPX file
+    # (strava.GPX_MAX_BYTES = 20 MB). Env: MAX_REQUEST_BODY_BYTES.
+    max_request_body_bytes: int = 20 * 1024 * 1024
+
     # Environment: "staging" or "production" (controls Swagger docs visibility)
     environment: str = "production"
 
