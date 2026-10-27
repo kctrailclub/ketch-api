@@ -2,7 +2,7 @@ fastapi==0.111.0
 uvicorn[standard]==0.29.0
 sqlalchemy==2.0.30
 pymysql==1.1.0
-cryptography==42.0.7
+cryptography==50.0.0
 pydantic[email]==2.7.1
 pydantic-settings==2.2.1
 python-jose[cryptography]==3.3.0
