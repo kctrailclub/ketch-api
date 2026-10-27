@@ -1,0 +1,45 @@
+name: deploy-verify
+
+# Deploy Sign-off Checks 1 + 2 (kctc-docs/testing/Deploy_Sign-off_Checklist.md §4.1), automated.
+# Confirms the SHA running on Railway production equals the tip of origin/main.
+# Requires GET /health to return {"sha": "<RAILWAY_GIT_COMMIT_SHA>"} (added in Operating Model v2 Phase 1).
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 0 * * 0"   # Sunday 00:00 UTC = Saturday 18:00 Denver (after the DEC-0015 16:00 release event)
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROD_HEALTH_URL: https://web-production-c3b2.up.railway.app/health
+
+jobs:
+  verify-prod-sha:
+    name: verify-prod-sha
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Wait for Railway to serve origin/main
+        run: |
+          expected="$(git rev-parse HEAD)"
+          echo "origin/main = $expected"
+          for attempt in $(seq 1 24); do
+            body="$(curl -fsS --max-time 15 "$PROD_HEALTH_URL" || true)"
+            deployed="$(printf '%s' "$body" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sha",""))' 2>/dev/null || true)"
+            echo "attempt $attempt: deployed = ${deployed:-<none>}"
+            if [ -n "$deployed" ] && [ "$deployed" = "$expected" ]; then
+              echo "PASS: Railway production is serving origin/main ($expected)"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "FAIL: Railway production SHA (${deployed:-<none>}) != origin/main ($expected) after 12 minutes"
+          echo "Check 2 of the Deploy Sign-off fails. Do not close the release."
+          exit 1
