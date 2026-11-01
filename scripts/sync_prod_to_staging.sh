@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
 # sync_prod_to_staging.sh — Refresh the KCTC staging MySQL DB from production,
-# preserving the staging-only Strava Trails Challenge tables.
+# preserving the staging-only Strava Trails Challenge tables, then making sure the
+# staging test data exists with its staging-only passwords (DEC-0023, Q-0053).
 #
-# Design + decisions: scripts/sync_prod_to_staging.README.md v1.0.0
+# Design + decisions: scripts/sync_prod_to_staging.README.md v1.2.0
 # Backlog item:      BL-0022
 # Owner:             Solution Architect (script); Champion (executes)
-# Version:           1.0.0  (2026-05-19)
+# Version:           1.2.0  (2026-11-01)
 #
 # Usage:
 #   ./scripts/sync_prod_to_staging.sh \
@@ -15,7 +16,13 @@
 #     --staging-cnf ~/.my.kctc-staging.cnf \
 #     --staging-db railway \
 #     --workdir /tmp/kctc-sync \
+#     --test-passwords-file ~/.kctc-staging-test-passwords \
 #     [--dry-run] [--no-cleanup] [--yes] [--staging-api-url URL]
+#     [--apply-test-passwords-only]
+#
+#   --test-passwords-file is required (or set KCTC_STAGING_TEST_PASSWORDS_FILE).
+#   --apply-test-passwords-only runs pre-flight, ensures the test data and passwords,
+#   and stops. It does no sync. Use it for the first apply, a rotation, or after an exit 7.
 #
 # Exit codes:
 #   0  success
@@ -25,6 +32,7 @@
 #   4  user declined confirmation
 #   5  destructive step failed (rollback artifact is staging_backup_$ts.sql)
 #   6  smoke check failed (sync completed but verification did not pass)
+#   7  test data or password step failed (test accounts may be missing or hold production hashes)
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -41,6 +49,8 @@ WORKDIR=""
 DRY_RUN=0
 NO_CLEANUP=0
 ASSUME_YES=0
+TEST_PASSWORDS_FILE="${KCTC_STAGING_TEST_PASSWORDS_FILE:-}"
+PASSWORDS_ONLY=0
 STAGING_API_URL="${KCTC_STAGING_API_URL:-}"
 
 usage() {
@@ -56,6 +66,8 @@ while [[ $# -gt 0 ]]; do
     --staging-db)       STAGING_DB="$2"; shift 2;;
     --workdir)          WORKDIR="$2"; shift 2;;
     --staging-api-url)  STAGING_API_URL="$2"; shift 2;;
+    --test-passwords-file) TEST_PASSWORDS_FILE="$2"; shift 2;;
+    --apply-test-passwords-only) PASSWORDS_ONLY=1; shift;;
     --dry-run)          DRY_RUN=1; shift;;
     --no-cleanup)       NO_CLEANUP=1; shift;;
     --yes)              ASSUME_YES=1; shift;;
@@ -88,6 +100,7 @@ log_h "Step 0 — Pre-flight"
 [[ -n "$STAGING_CNF" ]] || die 1 "--staging-cnf is required"
 [[ -n "$STAGING_DB"  ]] || die 1 "--staging-db is required"
 [[ -n "$WORKDIR"     ]] || die 1 "--workdir is required"
+[[ -n "$TEST_PASSWORDS_FILE" ]] || die 1 "--test-passwords-file (or KCTC_STAGING_TEST_PASSWORDS_FILE) is required: without it this run would leave production password hashes on the staging test accounts. See README section 15."
 
 # Credential files
 [[ -r "$PROD_CNF"    ]] || die 1 ".cnf not readable: $PROD_CNF"
@@ -131,7 +144,207 @@ prod_mysql -N -B -e "USE \`$PROD_DB\`; SELECT 1;" >/dev/null \
 staging_mysql -N -B -e "USE \`$STAGING_DB\`; SELECT 1;" >/dev/null \
   || die 2 "staging db '$STAGING_DB' unreachable"
 
+# ---------------------------------------------------------------------------
+# Staging-only test passwords: load and check (README section 15)
+#
+# Values are never printed, and reach mysql on stdin only, so they stay out of
+# the process list. Messages name an account by its position in the file.
+# ---------------------------------------------------------------------------
+
+set +x
+
+TEST_ROLES=()
+TEST_EMAILS=()
+TEST_HASHES=()
+TEST_LASTNAMES=()
+TEST_FIRSTNAMES=()
+TEST_TARGET=""
+HOUSEHOLD_ADMIN_CODE=""
+HOUSEHOLD_ADMIN_NAME=""
+HOUSEHOLD_SOLO_CODE=""
+HOUSEHOLD_SOLO_NAME=""
+TEST_PROJECT=""
+
+# host:port from a .cnf file: the endpoint the client connects to.
+cnf_endpoint() {
+  awk -F= '
+    /^[[:space:]]*host[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); h = $2 }
+    /^[[:space:]]*port[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); p = $2 }
+    END { printf "%s:%s", h, (p == "" ? "3306" : p) }
+  ' "$1"
+}
+
+file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+
+load_test_passwords() {
+  local line kind role code name email hash lastname firstname extra line_no=0
+  local safe_text='^[A-Za-z0-9][A-Za-z0-9 ._-]*$'
+
+  [[ -r "$TEST_PASSWORDS_FILE" ]] || die 1 "test passwords file not readable"
+  [[ "$(file_mode "$TEST_PASSWORDS_FILE")" == "600" ]] || die 1 "test passwords file must be mode 600"
+  if git -C "$(dirname "$TEST_PASSWORDS_FILE")" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    die 1 "test passwords file is inside a git work tree. Keep it outside any repo."
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_no=$((line_no + 1))
+    [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
+    kind="${line%% *}"
+    # Strict shapes throughout: these values go into SQL.
+    case "$kind" in
+      target)
+        IFS=' ' read -r _ name extra <<< "$line"
+        [[ -z "$TEST_TARGET" && -n "$name" && -z "$extra" ]] || die 1 "test passwords file line $line_no: bad target line"
+        TEST_TARGET="$name"
+        ;;
+      project)
+        IFS=' ' read -r _ name <<< "$line"
+        [[ -z "$TEST_PROJECT" && "$name" =~ $safe_text ]] || die 1 "test passwords file line $line_no: bad project line"
+        TEST_PROJECT="$name"
+        ;;
+      household)
+        IFS=' ' read -r _ role code name <<< "$line"
+        [[ "$code" =~ ^[A-Za-z0-9-]{1,10}$ && "$name" =~ $safe_text ]] || die 1 "test passwords file line $line_no: bad household line"
+        case "$role" in
+          admin) [[ -z "$HOUSEHOLD_ADMIN_CODE" ]] || die 1 "test passwords file line $line_no: duplicate household"
+                 HOUSEHOLD_ADMIN_CODE="$code"; HOUSEHOLD_ADMIN_NAME="$name" ;;
+          solo)  [[ -z "$HOUSEHOLD_SOLO_CODE" ]] || die 1 "test passwords file line $line_no: duplicate household"
+                 HOUSEHOLD_SOLO_CODE="$code"; HOUSEHOLD_SOLO_NAME="$name" ;;
+          *) die 1 "test passwords file line $line_no: household role must be admin or solo" ;;
+        esac
+        ;;
+      account)
+        IFS=' ' read -r _ role email hash lastname firstname <<< "$line"
+        [[ "$role" == "admin" || "$role" == "family" || "$role" == "solo" ]] || die 1 "test passwords file line $line_no: account role must be admin, family or solo"
+        [[ "$email" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || die 1 "test passwords file line $line_no: not an email address"
+        [[ "$hash" =~ ^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$ ]] || die 1 "test passwords file line $line_no: not a bcrypt hash"
+        [[ "$lastname" =~ $safe_text && "$firstname" =~ $safe_text ]] || die 1 "test passwords file line $line_no: bad account name"
+        TEST_ROLES+=("$role")
+        TEST_EMAILS+=("$email")
+        TEST_HASHES+=("$hash")
+        TEST_LASTNAMES+=("$lastname")
+        TEST_FIRSTNAMES+=("$firstname")
+        ;;
+      *) die 1 "test passwords file line $line_no: expected target, project, household or account" ;;
+    esac
+  done < "$TEST_PASSWORDS_FILE"
+
+  [[ -n "$TEST_TARGET" ]] || die 1 "test passwords file has no target line"
+  [[ -n "$TEST_PROJECT" ]] || die 1 "test passwords file has no project line"
+  [[ -n "$HOUSEHOLD_ADMIN_CODE" && -n "$HOUSEHOLD_SOLO_CODE" ]] || die 1 "test passwords file needs a household line for admin and for solo"
+  [[ "$HOUSEHOLD_ADMIN_CODE" != "$HOUSEHOLD_SOLO_CODE" ]] || die 1 "test passwords file: the two households need different codes"
+  [[ "${#TEST_EMAILS[@]}" -eq 3 ]] || die 1 "test passwords file must hold exactly 3 accounts, found ${#TEST_EMAILS[@]}"
+  [[ "$(printf '%s\n' "${TEST_ROLES[@]}" | sort -u | wc -l | tr -d ' ')" == "3" ]] || die 1 "test passwords file needs one account each for admin, family and solo"
+  [[ "$(printf '%s\n' "${TEST_EMAILS[@]}" | sort -u | wc -l | tr -d ' ')" == "3" ]] || die 1 "test passwords file: the three accounts need different emails"
+}
+
+check_test_password_target() {
+  local staging_endpoint prod_endpoint i prod_hash
+  staging_endpoint="$(cnf_endpoint "$STAGING_CNF")"
+  prod_endpoint="$(cnf_endpoint "$PROD_CNF")"
+
+  [[ "$staging_endpoint" == "$TEST_TARGET" ]] \
+    || die 3 "TARGET GUARD: --staging-cnf connects to $staging_endpoint, but the test passwords file allows only $TEST_TARGET. Refusing."
+  [[ "$staging_endpoint" != "$prod_endpoint" ]] \
+    || die 3 "TARGET GUARD: --prod-cnf and --staging-cnf connect to the same endpoint. Refusing."
+
+  # Read-only on prod. An account need not exist there. Where one does, a staging value equal
+  # to its prod hash would defeat the point (Q-0053).
+  for i in "${!TEST_EMAILS[@]}"; do
+    prod_hash="$(printf "USE \`%s\`; SELECT password_hash FROM users WHERE email='%s';\n" "$PROD_DB" "${TEST_EMAILS[$i]}" | prod_mysql -N -B)" \
+      || die 2 "could not read the ${TEST_ROLES[$i]} test account on prod"
+    [[ "$prod_hash" != "${TEST_HASHES[$i]}" ]] \
+      || die 1 "the ${TEST_ROLES[$i]} test account has the same hash as production. Generate a new staging-only password."
+  done
+}
+
+# The household each role belongs to.
+household_code_for() {
+  if [[ "$1" == "solo" ]]; then printf '%s' "$HOUSEHOLD_SOLO_CODE"; else printf '%s' "$HOUSEHOLD_ADMIN_CODE"; fi
+}
+
+staging_count() {
+  printf 'USE `%s`; %s\n' "$STAGING_DB" "$1" | staging_mysql -N -B 2>/dev/null
+}
+
+apply_test_passwords() {
+  local i sql n role code is_admin hh_name
+
+  # Only staging_mysql appears in this function, so it cannot write anywhere else.
+  # A restore replaces staging's rows with production's, and not all test data exists on
+  # production. So: create what is missing, then set what must not depend on production's row.
+  sql="USE \`$STAGING_DB\`; START TRANSACTION;"
+  for code in "$HOUSEHOLD_ADMIN_CODE" "$HOUSEHOLD_SOLO_CODE"; do
+    if [[ "$code" == "$HOUSEHOLD_ADMIN_CODE" ]]; then hh_name="$HOUSEHOLD_ADMIN_NAME"; else hh_name="$HOUSEHOLD_SOLO_NAME"; fi
+    sql="$sql INSERT INTO households (household_code, name, address, created, updated)
+      SELECT '$code', '$hh_name', '', NOW(), NOW() FROM DUAL
+      WHERE NOT EXISTS (SELECT 1 FROM households WHERE household_code='$code');"
+  done
+  sql="$sql INSERT INTO projects (name, project_type, member_credit_pct, admin_only, created, updated)
+    SELECT '$TEST_PROJECT', 'ongoing', 100, 0, NOW(), NOW() FROM DUAL
+    WHERE NOT EXISTS (SELECT 1 FROM projects WHERE name='$TEST_PROJECT');"
+  for i in "${!TEST_EMAILS[@]}"; do
+    role="${TEST_ROLES[$i]}"
+    code="$(household_code_for "$role")"
+    is_admin=0
+    [[ "$role" == "admin" ]] && is_admin=1
+    sql="$sql INSERT INTO users (firstname, lastname, email, phone, password_hash, household_id, is_admin, is_active, is_tester, youth, created, updated)
+      SELECT '${TEST_FIRSTNAMES[$i]}', '${TEST_LASTNAMES[$i]}', '${TEST_EMAILS[$i]}', '', '${TEST_HASHES[$i]}',
+             (SELECT household_id FROM households WHERE household_code='$code'), $is_admin, 1, 1, 0, NOW(), NOW() FROM DUAL
+      WHERE NOT EXISTS (SELECT 1 FROM users WHERE email='${TEST_EMAILS[$i]}');
+    UPDATE users SET password_hash='${TEST_HASHES[$i]}', is_admin=$is_admin, is_active=1, is_tester=1,
+      household_id=(SELECT household_id FROM households WHERE household_code='$code')
+      WHERE email='${TEST_EMAILS[$i]}';"
+    if [[ "$role" != "family" ]]; then
+      sql="$sql UPDATE households SET primary_user_id=(SELECT user_id FROM users WHERE email='${TEST_EMAILS[$i]}')
+        WHERE household_code='$code';"
+    fi
+  done
+  sql="$sql COMMIT;"
+  printf '%s\n' "$sql" | staging_mysql >/dev/null 2>&1 \
+    || die 7 "test data step failed and rolled back. Staging test accounts may be missing or hold production hashes. Fix, then re-run with --apply-test-passwords-only."
+
+  # Verify by reading: an UPDATE to an unchanged value, or of a missing row, also affects 0 rows.
+  for code in "$HOUSEHOLD_ADMIN_CODE" "$HOUSEHOLD_SOLO_CODE"; do
+    n="$(staging_count "SELECT COUNT(*) FROM households WHERE household_code='$code';")" \
+      || die 7 "could not verify the test households on staging"
+    [[ "$n" == "1" ]] || die 7 "expected 1 test household for a code, found $n. Re-run with --apply-test-passwords-only."
+  done
+  n="$(staging_count "SELECT COUNT(*) FROM projects WHERE name='$TEST_PROJECT';")" \
+    || die 7 "could not verify the test project on staging"
+  [[ "$n" -ge 1 ]] || die 7 "the test project is missing on staging. Re-run with --apply-test-passwords-only."
+  for i in "${!TEST_EMAILS[@]}"; do
+    role="${TEST_ROLES[$i]}"
+    code="$(household_code_for "$role")"
+    is_admin=0
+    [[ "$role" == "admin" ]] && is_admin=1
+    n="$(staging_count "SELECT COUNT(*) FROM users WHERE email='${TEST_EMAILS[$i]}' AND password_hash='${TEST_HASHES[$i]}' AND is_admin=$is_admin AND is_active=1 AND household_id=(SELECT household_id FROM households WHERE household_code='$code');")" \
+      || die 7 "could not verify the $role test account on staging"
+    [[ "$n" == "1" ]] \
+      || die 7 "the $role test account is not as expected on staging ($n matching rows). Re-run with --apply-test-passwords-only."
+  done
+  log "staging test data verified: ${#TEST_EMAILS[@]} accounts with staging-only passwords, 2 households, test project"
+}
+
+load_test_passwords
+check_test_password_target
+log "test passwords file OK: ${#TEST_EMAILS[@]} accounts, target matches --staging-cnf"
+
 log "Pre-flight OK."
+
+if [[ $PASSWORDS_ONLY -eq 1 ]]; then
+  log_h "Test data and passwords only (no sync)"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    log "DRY RUN: would ensure test data and staging-only passwords for ${#TEST_EMAILS[@]} test accounts. Done."
+    exit 0
+  fi
+  if [[ $ASSUME_YES -ne 1 ]]; then
+    read -rp "Type 'yes' to update ${#TEST_EMAILS[@]} accounts on $TEST_TARGET (anything else aborts): " reply
+    [[ "$reply" == "yes" ]] || die 4 "User declined confirmation"
+  fi
+  apply_test_passwords
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Path conventions
@@ -479,6 +692,16 @@ if [[ -n "$STAGING_API_URL" ]]; then
 else
   echo "  (skipped — no --staging-api-url / KCTC_STAGING_API_URL set)" | tee -a "$SUMMARY_LOG"
 fi
+
+# ---------------------------------------------------------------------------
+# Step 11d: Test data and staging-only passwords
+# ---------------------------------------------------------------------------
+
+log_h "Step 11d — Test data and staging-only passwords"
+
+# After the row-count parity check on purpose: this step can add rows production does not have.
+# The restore put production's rows on staging, so this always runs after one.
+apply_test_passwords
 
 # ---------------------------------------------------------------------------
 # Step 12: Cleanup

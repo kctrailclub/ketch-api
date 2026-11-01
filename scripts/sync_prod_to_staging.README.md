@@ -1,7 +1,7 @@
 # `sync_prod_to_staging.sh` — Prod → Staging DB Sync
 
-**Version:** 1.0.0
-**Date:** 2026-05-19
+**Version:** 1.2.0
+**Date:** 2026-11-01
 **Project:** Ken-Caryl Trail Club Application (KCTC)
 **Owner:** Solution Architect (script); Champion (executes)
 **Backlog item:** BL-0022
@@ -35,6 +35,7 @@ Conceptually:
 | D-5 | **Verification: smoke checks only** — script auto-validates row-count parity on a handful of critical tables and confirms Strava reload matches pre-sync counts (modulo skipped orphans). Champion separately logs in with 2–3 test accounts post-run for a 5–10 min spot check on waiver dates + household primary contacts. No full Deploy Sign-off Checklist run. | Champion direction, SA session 2026-05-19. |
 | D-6 | **Safety net: full staging dump before any destructive action** — the script's first action after the Strava side-save is a complete `mysqldump` of staging into a timestamped file, so a botched run can be reverted. | SA recommendation; standard hygiene. |
 | D-7 | **One-way directionality, host-equality only** — script refuses to run if the prod host:port matches the staging host:port (same DB on both sides — catastrophic misconfiguration). No name-based rule, since Railway names both DBs `railway` and a name rule would just produce friction. Champion is trusted to place the right `.cnf` file in the right `--prod-cnf` / `--staging-cnf` flag. | Champion direction, SA session 2026-05-19. |
+| D-8 | **Staging test data is ensured after every restore, and the run refuses to start without its local file.** A restore replaces staging's rows with production's. Production holds a production password on any test account it has, and it does not hold all of them. So after each restore the script creates whatever test data is missing and sets staging-only passwords, then verifies the result by reading it back. CI's credentials must never be production's. See §15. | Champion, Q-0053 / DEC-0023, 2026-11-01; EP-0045 rework, 2026-11-01. |
 
 ## 4. Prerequisites
 
@@ -46,6 +47,7 @@ Conceptually:
 | 4 | Two MySQL credential files: `~/.my.kctc-prod.cnf` and `~/.my.kctc-staging.cnf` | Created by the champion (see §5 below). The script uses `--defaults-extra-file=` to avoid putting credentials on the command line. |
 | 5 | Local disk space ~3× the prod DB size in `/tmp` (or wherever `--workdir` points) | Three intermediate dump files live for the duration of the run, then can be auto-cleaned. |
 | 6 | A brief window of staging unavailability (~5–15 minutes depending on DB size) | Run after-hours. |
+| 7 | Staging test data file, mode `0600`, outside any repo | Created by the champion (see §15). |
 
 ## 5. Credential file format
 
@@ -81,6 +83,7 @@ cd kctc-api
   --staging-cnf ~/.my.kctc-staging.cnf \
   --staging-db railway \
   --workdir /tmp/kctc-sync \
+  --test-passwords-file ~/.kctc-staging-test-passwords \
   [--dry-run] \
   [--no-cleanup] \
   [--yes]
@@ -91,6 +94,8 @@ Flags:
 - `--dry-run` — run all `mysqldump` operations and orphan-detection queries, but **do not** apply changes to staging. Prints what would happen. Use this first, every time.
 - `--no-cleanup` — keep all intermediate dump files in `--workdir` after success. Default is to keep only the staging-safety-net dump and the Strava save; the prod dump is deleted on success.
 - `--yes` — non-interactive; assume yes to the "are you sure?" prompt. Default behavior pauses for confirmation before any destructive step.
+- `--test-passwords-file` — required; or set `KCTC_STAGING_TEST_PASSWORDS_FILE`. See §15.
+- `--apply-test-passwords-only` — pre-flight, then ensure the test data and staging-only passwords, then stop. No sync. See §15.
 
 ## 7. What the script does, in order
 
@@ -160,6 +165,10 @@ Flags:
     - Staging API health: curl https://<staging-api>/health → expect 200.
       (Endpoint URL passed via --staging-api-url or env var; soft-fail if not set.)
 
+11d. Test data and staging-only passwords (D-8, §15)
+    - After the parity check, because it can add rows production does not have.
+    - Single transaction on staging, then everything verified by SELECT. Exit 7 on failure.
+
 12. Cleanup
     - DROP DATABASE strava_save_$timestamp; (unless --no-cleanup)
     - rm prod_dump_$timestamp.sql (unless --no-cleanup)
@@ -181,13 +190,15 @@ Flags:
 | Drop Strava tables succeeds but prod restore fails | Staging now has prod tables in inconsistent state and no Strava tables. **Recovery:** restore the staging-safety-net dump (`mysql staging < staging_backup_$timestamp.sql`). Investigate the prod dump file (corrupt? incompatible MySQL version?). |
 | Strava reload INSERT fails | Prod data is on staging fine; only Strava reload is incomplete. **Recovery:** the script's filtered INSERTs are wrapped in a transaction; on failure it rolls back the partial reload and prints the offending statement. Inspect, fix, re-run just step 10 manually from the temp schema (`strava_save_$timestamp` is still present unless `--no-cleanup` was off and previous run already cleaned). |
 | Smoke checks fail row-count parity | The restore happened but something is off. Inspect the divergent tables manually before declaring success. The staging-safety-net dump is the rollback path. |
+| Exit 3 (target guard) | Nothing has changed. `--staging-cnf` does not connect to the endpoint named in the test passwords file. Check that the `.cnf` files are not swapped. |
+| Exit 7 (test data step) | The restore is fine, but test accounts may be missing or hold production hashes, so CI logins fail. Fix the cause, then run `--apply-test-passwords-only`. |
 | Total rollback needed | `mysql staging < $workdir/staging_backup_$timestamp.sql` puts staging back to its pre-run state. The safety-net dump is kept on disk indefinitely (until champion cleans it). |
 
 ## 9. Post-run champion checklist
 
 After the script reports success, the champion runs a brief manual spot-check (per D-5 verification scope):
 
-- [ ] Log into staging admin (`kctcstaging.netlify.app`) with the admin test account from [PL test credentials](../../../.claude/projects/-Users-johnhamilton-Downloads-KCTCAppDocs/memory/project_pl_test_credentials.md).
+- [ ] Log into staging admin (`kctcstaging.netlify.app`) with the admin test account (see your password manager).
 - [ ] Open Members admin → confirm waiver dates appear for ~3 known accounts (match what's on prod).
 - [ ] Open Households admin → confirm primary contact (P badge) is set for ~3 known households (match what's on prod).
 - [ ] Open Reports → Activity Log → confirm rows from this morning's prod activity appear.
@@ -242,12 +253,91 @@ These are explicitly *not* in scope for v1.0.0.
 - [Versioning & Disclosure Standards](../../../kickoff/02_Versioning_and_Disclosure_Standards.md) v1.1.0 — §10 incremental approval; §18 repo state.
 - MEMORY.md — Strava staging-only fact ("Strava Trails Challenge — staging only, waiting on Strava response before prod deploy").
 
+### 13.3 Sources for v1.1.0 and v1.2.0 (EP-0045)
+
+- `ketch-api` `staging` @ `7c453b7`: this script; `app/core/security.py` (bcrypt); `app/models/models.py` (`users`).
+- `kctc-docs/testing/scripts/seed_pl_test_accounts.sql` (local, untracked): field values for the test data. Champion (verbal, relayed by the PL), 2026-11-01: not all test accounts exist on production.
+- `kctc-docs` @ `341ee24`: Automated Test Plan v1.0.0 §6.1, §9; Decision Log v1.13.0 DEC-0023; Questions Log v1.22.0 Q-0053.
+
 ## 14. Change Log
 
 | Version | Date | Author | Change |
 |---|---|---|---|
+| 1.2.0 | 2026-11-01 | Solution Architect | EP-0045 rework: not all test data exists on production, so the script now creates what is missing, sets flags on staging, and verifies by SELECT (§15, D-8). The file format gains roles, names, households and the project. The step moves to 11d, after the parity check. |
+| 1.1.1 | 2026-11-01 | Solution Architect | EP-0046 review: §9 points to the password manager for the staging login; §15 states the password length. |
+| 1.1.0 | 2026-11-01 | Solution Architect | EP-0045: added D-8 and §15, staging-only test-password re-apply (Q-0053 / DEC-0023). New required `--test-passwords-file`, new `--apply-test-passwords-only`, new exit 7, target guard on exit 3. |
 | 1.0.0 | 2026-05-19 | Solution Architect | Initial version. Captures four champion decisions (D-1 through D-5) + two SA additions accepted by champion (D-6 safety-net dump, D-7 host-equality directionality guard simplified from name-rule per champion direction in same session). Produced before the script itself per Standards §10 incremental approval. |
+
+## 15. Staging test data and staging-only passwords
+
+CI logs in to staging as three test accounts, with credentials held in GitHub, so those passwords must not be production's (Q-0053). A restore replaces staging's rows with production's, and production does not hold all of the test data. So this step does not assume any of it survived a restore.
+
+After each restore, on staging only, in one transaction:
+
+| Data | What the script does |
+|---|---|
+| Two test households | Creates each one if its code is missing. Sets the admin and solo accounts as primary contacts. |
+| Test project | Creates it if the name is missing: ongoing, 100% member credit, not admin-only. An existing row is left as it is. |
+| Three test accounts | Creates each one if its email is missing. Then, whether new or not, sets the staging-only hash, `is_active=1`, `is_tester=1`, its household, and `is_admin` (1 for admin, 0 for family and solo). |
+
+It then reads everything back. Each account must exist with the expected hash, flags and household, each household exactly once, and the project at least once. Anything else exits 7, including in `--apply-test-passwords-only`. It verifies by `SELECT` because an `UPDATE` of a missing row and an `UPDATE` to the same value both affect 0 rows.
+
+### The file
+
+It is a local file: mode `0600`, outside any git work tree, never committed or pasted anywhere. Fields are separated by single spaces. `#` starts a comment line. The identifying values live here, not in this public repo. Take the names and codes from `kctc-docs/testing/scripts/seed_pl_test_accounts.sql` (local, untracked).
+
+```text
+# <host>:<port> exactly as in the staging .cnf file
+target <staging-mysql-host>:<staging-mysql-port>
+project <project name>
+household admin <code> <household name>
+household solo <code> <household name>
+account admin <email> <bcrypt-hash> <lastname> <firstname>
+account family <email> <bcrypt-hash> <lastname> <firstname>
+account solo <email> <bcrypt-hash> <lastname> <firstname>
+```
+
+Names may contain spaces only where they are the last field: the project name, the household name and the first name. The admin and family accounts share the admin household.
+
+Generate a new random password of at least 20 characters for each account, never reused from production, keep it in a password manager, and hash it. The prompt does not echo:
+
+```bash
+python3 -c "import bcrypt, getpass; print(bcrypt.hashpw(getpass.getpass().encode(), bcrypt.gensalt(12)).decode())"
+```
+
+### What the script refuses
+
+All of these stop the run in pre-flight, before anything changes, and print no email, hash or password:
+
+| Check | Exit |
+|---|---|
+| No file given, unreadable, not mode `0600`, or inside a git work tree | 1 |
+| A line of the wrong shape, a missing or duplicate role, a missing household or project, or not exactly 3 distinct accounts | 1 |
+| A hash identical to that account's production hash, where the account exists on production | 1 |
+| `--staging-cnf` does not connect to the file's `target` (for example, swapped `.cnf` files) | 3 |
+| `--prod-cnf` and `--staging-cnf` connect to the same endpoint | 3 |
+
+There is no flag to skip this. A sync without it would leave production's hashes on any test account production has, and no row at all for the others.
+
+**What the hash check cannot catch.** bcrypt salts every hash, so the same password hashed twice looks different. The script catches a copied hash, not a reused password. Generating a new random password is what makes it staging-only.
+
+**Strava rows.** The Strava reload (step 10) runs before this step. A saved Strava row for a test account production lacks is dropped as an orphan (D-2) and listed in the orphan log.
+
+### First apply, and rotation
+
+```bash
+./scripts/sync_prod_to_staging.sh \
+  --prod-cnf ~/.my.kctc-prod.cnf --prod-db railway \
+  --staging-cnf ~/.my.kctc-staging.cnf --staging-db railway \
+  --workdir /tmp/kctc-sync \
+  --test-passwords-file ~/.kctc-staging-test-passwords \
+  --apply-test-passwords-only
+```
+
+Add `--dry-run` first to run the checks and change nothing. Then update the matching GitHub secrets (`ketch-app/e2e/README.md`). This mode only reads production. It writes only to staging, and only the test data above.
+
+This script never changes a production password.
 
 ---
 
-*Disclosure: This document was drafted with the assistance of a large language model (LLM). The project champion has reviewed it. Version: 1.0.0 — Date: 2026-05-19.*
+*Disclosure: This document was drafted with the assistance of a large language model (LLM). The project champion has reviewed it. Version: 1.2.0 — Date: 2026-11-01.*
