@@ -88,6 +88,7 @@ Rules:
 - Join hours to projects via hours.project_id = projects.project_id.
 - Join users to households via users.household_id = households.household_id.
 - When filtering by project name, member name, or household name, use LIKE with wildcards (e.g. WHERE p.name LIKE '%keyword%') instead of exact matching, unless the user clearly provides the full exact name.
+- Never use SELECT * or table.*; always list the columns you need explicitly.
 - Always include a LIMIT clause (max 500 rows).
 - Return ONLY the raw SQL query, no explanation, no markdown fences, no extra text.
 """.strip()
@@ -98,6 +99,13 @@ MAX_ROWS = 500
 
 # Functions that are dangerous even inside SELECT — rejected at AST level.
 _FORBIDDEN_FUNCS = frozenset({"load_file", "benchmark", "sleep", "get_lock"})
+
+# Credential columns on allowlisted tables (SEC-0020).  Rejected wherever the
+# identifier appears: projection, WHERE, JOIN ... ON/USING, GROUP BY, ORDER BY,
+# function arguments, subqueries.  invite_token doubles as the password-reset
+# token, so reading it allows account takeover.  Add any new secret-bearing
+# column here.
+_FORBIDDEN_COLUMNS = frozenset({"password_hash", "invite_token", "invite_expires"})
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +195,28 @@ def _validate_sql(sql: str) -> str:
                 status_code=400,
                 detail=f"Table '{table.name}' is not allowed. "
                        f"Allowed: {', '.join(sorted(ALLOWED_TABLES))}.",
+            )
+
+    # Reject credential columns at any depth (SEC-0020).  Checking every Identifier
+    # (not just exp.Column) also covers JOIN ... USING (invite_token), which sqlglot
+    # does not parse as a Column.  Backticks are normalised away and MySQL column
+    # names are case-insensitive, so compare stripped and lower-cased.  An alias
+    # with a forbidden name is rejected too; that fails closed.
+    for ident in stmt.find_all(exp.Identifier):
+        if ident.name.strip().lower() in _FORBIDDEN_COLUMNS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Column '{ident.name}' is not allowed.",
+            )
+
+    # Reject wildcard projections (SELECT *, SELECT t.*) at any depth: they would
+    # return credential columns without naming them.  COUNT(*) is the only
+    # permitted use of a star.
+    for star in stmt.find_all(exp.Star):
+        if not isinstance(star.parent, exp.Count):
+            raise HTTPException(
+                status_code=400,
+                detail="SELECT * is not allowed; name the columns explicitly.",
             )
 
     # Reject dangerous functions (parsed as Anonymous nodes in sqlglot/MySQL dialect).
