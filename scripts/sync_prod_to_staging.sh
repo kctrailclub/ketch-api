@@ -4,7 +4,7 @@
 # preserving the staging-only Strava Trails Challenge tables, then re-applying the
 # staging-only passwords of the three test accounts (DEC-0023, Q-0053).
 #
-# Design + decisions: scripts/sync_prod_to_staging.README.md v1.1.0
+# Design + decisions: scripts/sync_prod_to_staging.README.md v1.1.1
 # Backlog item:      BL-0022
 # Owner:             Solution Architect (script); Champion (executes)
 # Version:           1.1.0  (2026-11-01)

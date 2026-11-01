@@ -1,6 +1,6 @@
 # `sync_prod_to_staging.sh` — Prod → Staging DB Sync
 
-**Version:** 1.1.0
+**Version:** 1.1.1
 **Date:** 2026-11-01
 **Project:** Ken-Caryl Trail Club Application (KCTC)
 **Owner:** Solution Architect (script); Champion (executes)
@@ -197,7 +197,7 @@ Flags:
 
 After the script reports success, the champion runs a brief manual spot-check (per D-5 verification scope):
 
-- [ ] Log into staging admin (`kctcstaging.netlify.app`) with the admin test account from [PL test credentials](../../../.claude/projects/-Users-johnhamilton-Downloads-KCTCAppDocs/memory/project_pl_test_credentials.md).
+- [ ] Log into staging admin (`kctcstaging.netlify.app`) with the admin test account (see your password manager).
 - [ ] Open Members admin → confirm waiver dates appear for ~3 known accounts (match what's on prod).
 - [ ] Open Households admin → confirm primary contact (P badge) is set for ~3 known households (match what's on prod).
 - [ ] Open Reports → Activity Log → confirm rows from this morning's prod activity appear.
@@ -261,6 +261,7 @@ These are explicitly *not* in scope for v1.0.0.
 
 | Version | Date | Author | Change |
 |---|---|---|---|
+| 1.1.1 | 2026-11-01 | Solution Architect | EP-0046 review: §9 points to the password manager for the staging login; §15 states the password length. |
 | 1.1.0 | 2026-11-01 | Solution Architect | EP-0045: added D-8 and §15, staging-only test-password re-apply (Q-0053 / DEC-0023). New required `--test-passwords-file`, new `--apply-test-passwords-only`, new exit 7, target guard on exit 3. |
 | 1.0.0 | 2026-05-19 | Solution Architect | Initial version. Captures four champion decisions (D-1 through D-5) + two SA additions accepted by champion (D-6 safety-net dump, D-7 host-equality directionality guard simplified from name-rule per champion direction in same session). Produced before the script itself per Standards §10 incremental approval. |
 
@@ -280,7 +281,7 @@ account <family-email> <bcrypt-hash>
 account <solo-email> <bcrypt-hash>
 ```
 
-Generate a new random password for each account, keep it in a password manager, and hash it. The prompt does not echo:
+Generate a new random password of at least 20 characters for each account, never reused from production, keep it in a password manager, and hash it. The prompt does not echo:
 
 ```bash
 python3 -c "import bcrypt, getpass; print(bcrypt.hashpw(getpass.getpass().encode(), bcrypt.gensalt(12)).decode())"
@@ -320,4 +321,4 @@ Each account's production password is untouched by this script.
 
 ---
 
-*Disclosure: This document was drafted with the assistance of a large language model (LLM). The project champion has reviewed it. Version: 1.1.0 — Date: 2026-11-01.*
+*Disclosure: This document was drafted with the assistance of a large language model (LLM). The project champion has reviewed it. Version: 1.1.1 — Date: 2026-11-01.*

@@ -1,8 +1,9 @@
 name: dispatch-e2e
 
-# Tells ketch-app to run its e2e-staging workflow after a ketch-api staging push (DEC-0023, Q-0052).
-# e2e-staging waits until staging serves origin/staging of both repos, so nothing is sent in the
-# payload. GitHub only starts the receiving run once e2e-staging.yml is on ketch-app's default branch.
+# Starts ketch-app's e2e-staging workflow, ref staging, after a ketch-api staging push (DEC-0023, Q-0052;
+# Actions: write token per the EP-0046 review). e2e-staging waits until staging serves origin/staging of
+# both repos, so the body is fixed. Until e2e-staging.yml is on ketch-app's default branch, GitHub
+# rejects this call and this workflow shows failed.
 
 on:
   push:
@@ -19,7 +20,7 @@ jobs:
     # Holds KETCH_APP_DISPATCH_TOKEN. The deployment rule allows only the staging branch.
     environment: staging-e2e-dispatch
     steps:
-      - name: Send repository_dispatch to ketch-app
+      - name: Dispatch e2e-staging on ketch-app
         env:
           DISPATCH_TOKEN: ${{ secrets.KETCH_APP_DISPATCH_TOKEN }}
         run: |
@@ -31,6 +32,6 @@ jobs:
             -H "Authorization: Bearer $DISPATCH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2022-11-28" \
-            -d '{"event_type":"ketch-api-staging-push"}' \
-            https://api.github.com/repos/kctrailclub/ketch-app/dispatches
+            -d '{"ref":"staging","inputs":{"tags":"@p1|@p2|@guard"}}' \
+            https://api.github.com/repos/kctrailclub/ketch-app/actions/workflows/e2e-staging.yml/dispatches
           echo "Dispatched to ketch-app"
