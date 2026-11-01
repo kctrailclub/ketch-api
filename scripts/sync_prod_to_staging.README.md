@@ -1,7 +1,7 @@
 # `sync_prod_to_staging.sh` — Prod → Staging DB Sync
 
-**Version:** 1.0.0
-**Date:** 2026-05-19
+**Version:** 1.1.0
+**Date:** 2026-11-01
 **Project:** Ken-Caryl Trail Club Application (KCTC)
 **Owner:** Solution Architect (script); Champion (executes)
 **Backlog item:** BL-0022
@@ -35,6 +35,7 @@ Conceptually:
 | D-5 | **Verification: smoke checks only** — script auto-validates row-count parity on a handful of critical tables and confirms Strava reload matches pre-sync counts (modulo skipped orphans). Champion separately logs in with 2–3 test accounts post-run for a 5–10 min spot check on waiver dates + household primary contacts. No full Deploy Sign-off Checklist run. | Champion direction, SA session 2026-05-19. |
 | D-6 | **Safety net: full staging dump before any destructive action** — the script's first action after the Strava side-save is a complete `mysqldump` of staging into a timestamped file, so a botched run can be reverted. | SA recommendation; standard hygiene. |
 | D-7 | **One-way directionality, host-equality only** — script refuses to run if the prod host:port matches the staging host:port (same DB on both sides — catastrophic misconfiguration). No name-based rule, since Railway names both DBs `railway` and a name rule would just produce friction. Champion is trusted to place the right `.cnf` file in the right `--prod-cnf` / `--staging-cnf` flag. | Champion direction, SA session 2026-05-19. |
+| D-8 | **Staging-only test passwords are re-applied after every restore, and the run refuses to start without them.** The restore puts production's password hashes on the three test accounts. Those accounts' credentials are in CI secrets, so they must not be production's. See §15. | Champion, Q-0053 / DEC-0023, 2026-11-01. |
 
 ## 4. Prerequisites
 
@@ -46,6 +47,7 @@ Conceptually:
 | 4 | Two MySQL credential files: `~/.my.kctc-prod.cnf` and `~/.my.kctc-staging.cnf` | Created by the champion (see §5 below). The script uses `--defaults-extra-file=` to avoid putting credentials on the command line. |
 | 5 | Local disk space ~3× the prod DB size in `/tmp` (or wherever `--workdir` points) | Three intermediate dump files live for the duration of the run, then can be auto-cleaned. |
 | 6 | A brief window of staging unavailability (~5–15 minutes depending on DB size) | Run after-hours. |
+| 7 | Staging-only test passwords file, mode `0600`, outside any repo | Created by the champion (see §15). |
 
 ## 5. Credential file format
 
@@ -81,6 +83,7 @@ cd kctc-api
   --staging-cnf ~/.my.kctc-staging.cnf \
   --staging-db railway \
   --workdir /tmp/kctc-sync \
+  --test-passwords-file ~/.kctc-staging-test-passwords \
   [--dry-run] \
   [--no-cleanup] \
   [--yes]
@@ -91,6 +94,8 @@ Flags:
 - `--dry-run` — run all `mysqldump` operations and orphan-detection queries, but **do not** apply changes to staging. Prints what would happen. Use this first, every time.
 - `--no-cleanup` — keep all intermediate dump files in `--workdir` after success. Default is to keep only the staging-safety-net dump and the Strava save; the prod dump is deleted on success.
 - `--yes` — non-interactive; assume yes to the "are you sure?" prompt. Default behavior pauses for confirmation before any destructive step.
+- `--test-passwords-file` — required; or set `KCTC_STAGING_TEST_PASSWORDS_FILE`. See §15.
+- `--apply-test-passwords-only` — pre-flight, then set the staging-only passwords, then stop. No sync. See §15.
 
 ## 7. What the script does, in order
 
@@ -151,6 +156,9 @@ Flags:
     - INSERT INTO strava_segment_efforts SELECT ... INNER JOIN strava_connections + strava_segments.
     - SET FOREIGN_KEY_CHECKS = 1.
 
+10b. Re-apply staging-only test passwords (D-8, §15)
+    - Single transaction on staging, then each account verified. Exit 7 on failure.
+
 11. Smoke checks
     - Row-count parity (staging vs prod) on: users, households, projects, hours,
       audit_logs, refresh_tokens, settings. Tolerances: zero variance expected
@@ -181,6 +189,8 @@ Flags:
 | Drop Strava tables succeeds but prod restore fails | Staging now has prod tables in inconsistent state and no Strava tables. **Recovery:** restore the staging-safety-net dump (`mysql staging < staging_backup_$timestamp.sql`). Investigate the prod dump file (corrupt? incompatible MySQL version?). |
 | Strava reload INSERT fails | Prod data is on staging fine; only Strava reload is incomplete. **Recovery:** the script's filtered INSERTs are wrapped in a transaction; on failure it rolls back the partial reload and prints the offending statement. Inspect, fix, re-run just step 10 manually from the temp schema (`strava_save_$timestamp` is still present unless `--no-cleanup` was off and previous run already cleaned). |
 | Smoke checks fail row-count parity | The restore happened but something is off. Inspect the divergent tables manually before declaring success. The staging-safety-net dump is the rollback path. |
+| Exit 3 (target guard) | Nothing has changed. `--staging-cnf` does not connect to the endpoint named in the test passwords file. Check that the `.cnf` files are not swapped. |
+| Exit 7 (test-password re-apply) | The restore is fine, but the test accounts may hold production hashes, so CI logins fail. Fix the cause, then run `--apply-test-passwords-only`. |
 | Total rollback needed | `mysql staging < $workdir/staging_backup_$timestamp.sql` puts staging back to its pre-run state. The safety-net dump is kept on disk indefinitely (until champion cleans it). |
 
 ## 9. Post-run champion checklist
@@ -242,12 +252,72 @@ These are explicitly *not* in scope for v1.0.0.
 - [Versioning & Disclosure Standards](../../../kickoff/02_Versioning_and_Disclosure_Standards.md) v1.1.0 — §10 incremental approval; §18 repo state.
 - MEMORY.md — Strava staging-only fact ("Strava Trails Challenge — staging only, waiting on Strava response before prod deploy").
 
+### 13.3 Sources for v1.1.0 (EP-0045)
+
+- `ketch-api` `staging` @ `7c453b7`: this script; `app/core/security.py` (bcrypt); `app/models/models.py` (`users`).
+- `kctc-docs` @ `341ee24`: Automated Test Plan v1.0.0 §6.1, §9; Decision Log v1.13.0 DEC-0023; Questions Log v1.22.0 Q-0053.
+
 ## 14. Change Log
 
 | Version | Date | Author | Change |
 |---|---|---|---|
+| 1.1.0 | 2026-11-01 | Solution Architect | EP-0045: added D-8 and §15, staging-only test-password re-apply (Q-0053 / DEC-0023). New required `--test-passwords-file`, new `--apply-test-passwords-only`, new exit 7, target guard on exit 3. |
 | 1.0.0 | 2026-05-19 | Solution Architect | Initial version. Captures four champion decisions (D-1 through D-5) + two SA additions accepted by champion (D-6 safety-net dump, D-7 host-equality directionality guard simplified from name-rule per champion direction in same session). Produced before the script itself per Standards §10 incremental approval. |
+
+## 15. Staging-only test passwords
+
+The three test accounts are real rows that a restore overwrites with production's hashes. CI holds their staging credentials, so the staging password must differ from production's. That keeps a production admin credential out of GitHub (Q-0053).
+
+### The file
+
+It is a local file: mode `0600`, outside any git work tree, never committed or pasted anywhere. Fields are separated by single spaces. `#` starts a comment line.
+
+```text
+# <host>:<port> exactly as in the staging .cnf file
+target <staging-mysql-host>:<staging-mysql-port>
+account <admin-email> <bcrypt-hash>
+account <family-email> <bcrypt-hash>
+account <solo-email> <bcrypt-hash>
+```
+
+Generate a new random password for each account, keep it in a password manager, and hash it. The prompt does not echo:
+
+```bash
+python3 -c "import bcrypt, getpass; print(bcrypt.hashpw(getpass.getpass().encode(), bcrypt.gensalt(12)).decode())"
+```
+
+### What the script refuses
+
+All of these stop the run in pre-flight, before anything changes, and print no email, hash or password:
+
+| Check | Exit |
+|---|---|
+| No file given, unreadable, not mode `0600`, or inside a git work tree | 1 |
+| A line of the wrong shape, or not exactly 3 accounts | 1 |
+| An account that does not match exactly one user on production | 1 |
+| A hash identical to that account's production hash | 1 |
+| `--staging-cnf` does not connect to the file's `target` (for example, swapped `.cnf` files) | 3 |
+| `--prod-cnf` and `--staging-cnf` connect to the same endpoint | 3 |
+
+There is no flag to skip this. A sync without it would leave production's hashes on the test accounts.
+
+**What the hash check cannot catch.** bcrypt salts every hash, so the same password hashed twice looks different. The script catches a copied hash, not a reused password. Generating a new random password is what makes it staging-only.
+
+### First apply, and rotation
+
+```bash
+./scripts/sync_prod_to_staging.sh \
+  --prod-cnf ~/.my.kctc-prod.cnf --prod-db railway \
+  --staging-cnf ~/.my.kctc-staging.cnf --staging-db railway \
+  --workdir /tmp/kctc-sync \
+  --test-passwords-file ~/.kctc-staging-test-passwords \
+  --apply-test-passwords-only
+```
+
+Add `--dry-run` first to run the checks and change nothing. Then update the matching GitHub secrets (`ketch-app/e2e/README.md`). This mode only reads production. It writes only to staging, and only the `password_hash` of these three accounts.
+
+Each account's production password is untouched by this script.
 
 ---
 
-*Disclosure: This document was drafted with the assistance of a large language model (LLM). The project champion has reviewed it. Version: 1.0.0 — Date: 2026-05-19.*
+*Disclosure: This document was drafted with the assistance of a large language model (LLM). The project champion has reviewed it. Version: 1.1.0 — Date: 2026-11-01.*

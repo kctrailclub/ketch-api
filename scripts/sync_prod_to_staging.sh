@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 #
 # sync_prod_to_staging.sh — Refresh the KCTC staging MySQL DB from production,
-# preserving the staging-only Strava Trails Challenge tables.
+# preserving the staging-only Strava Trails Challenge tables, then re-applying the
+# staging-only passwords of the three test accounts (DEC-0023, Q-0053).
 #
-# Design + decisions: scripts/sync_prod_to_staging.README.md v1.0.0
+# Design + decisions: scripts/sync_prod_to_staging.README.md v1.1.0
 # Backlog item:      BL-0022
 # Owner:             Solution Architect (script); Champion (executes)
-# Version:           1.0.0  (2026-05-19)
+# Version:           1.1.0  (2026-11-01)
 #
 # Usage:
 #   ./scripts/sync_prod_to_staging.sh \
@@ -15,7 +16,13 @@
 #     --staging-cnf ~/.my.kctc-staging.cnf \
 #     --staging-db railway \
 #     --workdir /tmp/kctc-sync \
+#     --test-passwords-file ~/.kctc-staging-test-passwords \
 #     [--dry-run] [--no-cleanup] [--yes] [--staging-api-url URL]
+#     [--apply-test-passwords-only]
+#
+#   --test-passwords-file is required (or set KCTC_STAGING_TEST_PASSWORDS_FILE).
+#   --apply-test-passwords-only runs pre-flight, sets the passwords, and stops. It
+#   does no sync. Use it for the first apply, for a rotation, or after an exit 7.
 #
 # Exit codes:
 #   0  success
@@ -25,6 +32,7 @@
 #   4  user declined confirmation
 #   5  destructive step failed (rollback artifact is staging_backup_$ts.sql)
 #   6  smoke check failed (sync completed but verification did not pass)
+#   7  test-password re-apply failed (staging test accounts may hold production hashes)
 
 set -Eeuo pipefail
 IFS=$'\n\t'
@@ -41,6 +49,8 @@ WORKDIR=""
 DRY_RUN=0
 NO_CLEANUP=0
 ASSUME_YES=0
+TEST_PASSWORDS_FILE="${KCTC_STAGING_TEST_PASSWORDS_FILE:-}"
+PASSWORDS_ONLY=0
 STAGING_API_URL="${KCTC_STAGING_API_URL:-}"
 
 usage() {
@@ -56,6 +66,8 @@ while [[ $# -gt 0 ]]; do
     --staging-db)       STAGING_DB="$2"; shift 2;;
     --workdir)          WORKDIR="$2"; shift 2;;
     --staging-api-url)  STAGING_API_URL="$2"; shift 2;;
+    --test-passwords-file) TEST_PASSWORDS_FILE="$2"; shift 2;;
+    --apply-test-passwords-only) PASSWORDS_ONLY=1; shift;;
     --dry-run)          DRY_RUN=1; shift;;
     --no-cleanup)       NO_CLEANUP=1; shift;;
     --yes)              ASSUME_YES=1; shift;;
@@ -88,6 +100,7 @@ log_h "Step 0 — Pre-flight"
 [[ -n "$STAGING_CNF" ]] || die 1 "--staging-cnf is required"
 [[ -n "$STAGING_DB"  ]] || die 1 "--staging-db is required"
 [[ -n "$WORKDIR"     ]] || die 1 "--workdir is required"
+[[ -n "$TEST_PASSWORDS_FILE" ]] || die 1 "--test-passwords-file (or KCTC_STAGING_TEST_PASSWORDS_FILE) is required: without it this run would leave production password hashes on the staging test accounts. See README section 15."
 
 # Credential files
 [[ -r "$PROD_CNF"    ]] || die 1 ".cnf not readable: $PROD_CNF"
@@ -131,7 +144,126 @@ prod_mysql -N -B -e "USE \`$PROD_DB\`; SELECT 1;" >/dev/null \
 staging_mysql -N -B -e "USE \`$STAGING_DB\`; SELECT 1;" >/dev/null \
   || die 2 "staging db '$STAGING_DB' unreachable"
 
+# ---------------------------------------------------------------------------
+# Staging-only test passwords: load and check (README section 15)
+#
+# Values are never printed, and reach mysql on stdin only, so they stay out of
+# the process list. Messages name an account by its position in the file.
+# ---------------------------------------------------------------------------
+
+set +x
+
+TEST_EMAILS=()
+TEST_HASHES=()
+TEST_TARGET=""
+
+# host:port from a .cnf file: the endpoint the client connects to.
+cnf_endpoint() {
+  awk -F= '
+    /^[[:space:]]*host[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); h = $2 }
+    /^[[:space:]]*port[[:space:]]*=/ { gsub(/[[:space:]]/, "", $2); p = $2 }
+    END { printf "%s:%s", h, (p == "" ? "3306" : p) }
+  ' "$1"
+}
+
+file_mode() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"; }
+
+load_test_passwords() {
+  local line kind first second extra line_no=0
+
+  [[ -r "$TEST_PASSWORDS_FILE" ]] || die 1 "test passwords file not readable"
+  [[ "$(file_mode "$TEST_PASSWORDS_FILE")" == "600" ]] || die 1 "test passwords file must be mode 600"
+  if git -C "$(dirname "$TEST_PASSWORDS_FILE")" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    die 1 "test passwords file is inside a git work tree. Keep it outside any repo."
+  fi
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line_no=$((line_no + 1))
+    [[ -z "${line//[[:space:]]/}" || "$line" =~ ^[[:space:]]*# ]] && continue
+    IFS=' ' read -r kind first second extra <<< "$line"
+    [[ -z "$extra" ]] || die 1 "test passwords file line $line_no: too many fields"
+    case "$kind" in
+      target)
+        [[ -z "$TEST_TARGET" && -n "$first" && -z "$second" ]] || die 1 "test passwords file line $line_no: bad target line"
+        TEST_TARGET="$first"
+        ;;
+      account)
+        # Strict shapes: these values go into SQL.
+        [[ "$first" =~ ^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+$ ]] || die 1 "test passwords file line $line_no: not an email address"
+        [[ "$second" =~ ^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$ ]] || die 1 "test passwords file line $line_no: not a bcrypt hash"
+        TEST_EMAILS+=("$first")
+        TEST_HASHES+=("$second")
+        ;;
+      *) die 1 "test passwords file line $line_no: expected target or account" ;;
+    esac
+  done < "$TEST_PASSWORDS_FILE"
+
+  [[ -n "$TEST_TARGET" ]] || die 1 "test passwords file has no target line"
+  [[ "${#TEST_EMAILS[@]}" -eq 3 ]] || die 1 "test passwords file must hold exactly 3 accounts, found ${#TEST_EMAILS[@]}"
+}
+
+check_test_password_target() {
+  local staging_endpoint prod_endpoint i n prod_hash
+  staging_endpoint="$(cnf_endpoint "$STAGING_CNF")"
+  prod_endpoint="$(cnf_endpoint "$PROD_CNF")"
+
+  [[ "$staging_endpoint" == "$TEST_TARGET" ]] \
+    || die 3 "TARGET GUARD: --staging-cnf connects to $staging_endpoint, but the test passwords file allows only $TEST_TARGET. Refusing."
+  [[ "$staging_endpoint" != "$prod_endpoint" ]] \
+    || die 3 "TARGET GUARD: --prod-cnf and --staging-cnf connect to the same endpoint. Refusing."
+
+  # Read-only on prod. A staging value equal to the prod hash would defeat the point (Q-0053).
+  for i in "${!TEST_EMAILS[@]}"; do
+    n="$(printf "USE \`%s\`; SELECT COUNT(*) FROM users WHERE email='%s';\n" "$PROD_DB" "${TEST_EMAILS[$i]}" | prod_mysql -N -B)" \
+      || die 2 "could not look up test account $((i + 1)) on prod"
+    [[ "$n" == "1" ]] || die 1 "test account $((i + 1)) matches $n users on prod; expected 1"
+    prod_hash="$(printf "USE \`%s\`; SELECT password_hash FROM users WHERE email='%s';\n" "$PROD_DB" "${TEST_EMAILS[$i]}" | prod_mysql -N -B)" \
+      || die 2 "could not read test account $((i + 1)) on prod"
+    [[ "$prod_hash" != "${TEST_HASHES[$i]}" ]] \
+      || die 1 "test account $((i + 1)) has the same hash as production. Generate a new staging-only password."
+  done
+}
+
+apply_test_passwords() {
+  local i sql n
+
+  # Only staging_mysql appears in this function, so it cannot write anywhere else.
+  sql="USE \`$STAGING_DB\`; START TRANSACTION;"
+  for i in "${!TEST_EMAILS[@]}"; do
+    sql="$sql UPDATE users SET password_hash='${TEST_HASHES[$i]}' WHERE email='${TEST_EMAILS[$i]}';"
+  done
+  sql="$sql COMMIT;"
+  printf '%s\n' "$sql" | staging_mysql >/dev/null 2>&1 \
+    || die 7 "test-password UPDATE failed. Staging test accounts may hold production hashes. Fix, then re-run with --apply-test-passwords-only."
+
+  for i in "${!TEST_EMAILS[@]}"; do
+    n="$(printf "USE \`%s\`; SELECT COUNT(*) FROM users WHERE email='%s' AND password_hash='%s';\n" "$STAGING_DB" "${TEST_EMAILS[$i]}" "${TEST_HASHES[$i]}" | staging_mysql -N -B 2>/dev/null)" \
+      || die 7 "could not verify test account $((i + 1)) on staging"
+    [[ "$n" == "1" ]] \
+      || die 7 "test account $((i + 1)) did not take its staging-only password ($n rows). Re-run with --apply-test-passwords-only."
+  done
+  log "staging-only passwords applied and verified for ${#TEST_EMAILS[@]} test accounts"
+}
+
+load_test_passwords
+check_test_password_target
+log "test passwords file OK: ${#TEST_EMAILS[@]} accounts, target matches --staging-cnf"
+
 log "Pre-flight OK."
+
+if [[ $PASSWORDS_ONLY -eq 1 ]]; then
+  log_h "Test passwords only (no sync)"
+  if [[ $DRY_RUN -eq 1 ]]; then
+    log "DRY RUN: would set staging-only passwords for ${#TEST_EMAILS[@]} test accounts. Done."
+    exit 0
+  fi
+  if [[ $ASSUME_YES -ne 1 ]]; then
+    read -rp "Type 'yes' to update ${#TEST_EMAILS[@]} accounts on $TEST_TARGET (anything else aborts): " reply
+    [[ "$reply" == "yes" ]] || die 4 "User declined confirmation"
+  fi
+  apply_test_passwords
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # Path conventions
@@ -438,6 +570,15 @@ SET FOREIGN_KEY_CHECKS = 1;
 SQL
 
 log "filtered Strava data inserted"
+
+# ---------------------------------------------------------------------------
+# Step 10b: Re-apply staging-only test passwords
+# ---------------------------------------------------------------------------
+
+log_h "Step 10b — Re-apply staging-only test passwords"
+
+# Step 6 restored production's hashes over staging, so this always runs after a restore.
+apply_test_passwords
 
 # ---------------------------------------------------------------------------
 # Step 11: Smoke checks
