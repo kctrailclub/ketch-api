@@ -89,6 +89,7 @@ Rules:
 - Join users to households via users.household_id = households.household_id.
 - When filtering by project name, member name, or household name, use LIKE with wildcards (e.g. WHERE p.name LIKE '%keyword%') instead of exact matching, unless the user clearly provides the full exact name.
 - Never use SELECT * or table.*; always list the columns you need explicitly.
+- If you use SELECT DISTINCT, every column or expression in ORDER BY must also appear in the SELECT list; otherwise omit DISTINCT.
 - Always include a LIMIT clause (max 500 rows).
 - Return ONLY the raw SQL query, no explanation, no markdown fences, no extra text.
 """.strip()
@@ -128,13 +129,34 @@ class NLQueryResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _generate_sql(question: str) -> str:
-    """Call Claude API to convert a natural-language question into SQL."""
+# MySQL ER_FIELD_IN_ORDER_NOT_SELECT: "Expression #N of ORDER BY clause is not in
+# SELECT list ... incompatible with DISTINCT".  A model-authored statement can
+# pass validation and still be rejected by MySQL for this reason (BR-0011).
+_MYSQL_ERR_ORDER_BY_NOT_IN_DISTINCT_SELECT = 3065
+
+
+def _generate_sql(question: str, failed_sql: Optional[str] = None) -> str:
+    """Call Claude API to convert a natural-language question into SQL.
+
+    ``failed_sql`` is set only on the single MySQL 3065 retry: the earlier,
+    already-validated statement is shown to the model with a fixed instruction.
+    The database error text is deliberately not forwarded.
+    """
     if not settings.anthropic_api_key:
         raise HTTPException(
             status_code=503,
             detail="Natural language query is not configured. "
                    "Set ANTHROPIC_API_KEY in the server environment.",
+        )
+
+    content = f"{SCHEMA_CONTEXT}\n\nQuestion: {question}"
+    if failed_sql is not None:
+        content += (
+            "\n\nYour previous query was rejected by MySQL because it used SELECT DISTINCT "
+            "with ORDER BY columns that are not in the SELECT list:\n"
+            f"{failed_sql}\n"
+            "Rewrite it so every ORDER BY column also appears in the SELECT list, "
+            "or remove DISTINCT. Follow all the rules above."
         )
 
     client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
@@ -144,7 +166,7 @@ def _generate_sql(question: str) -> str:
         messages=[
             {
                 "role": "user",
-                "content": f"{SCHEMA_CONTEXT}\n\nQuestion: {question}",
+                "content": content,
             }
         ],
     )
@@ -240,6 +262,63 @@ def _validate_sql(sql: str) -> str:
 
     # Return the AST-regenerated SQL — normalises away encoding tricks.
     return stmt.sql(dialect="mysql")
+
+
+def _generate_sql_or_http_error(question: str, failed_sql: Optional[str] = None) -> str:
+    """_generate_sql with provider failures mapped to HTTP errors."""
+    try:
+        return _generate_sql(question, failed_sql)
+    except HTTPException:
+        raise
+    except anthropic.AuthenticationError as e:
+        raise HTTPException(status_code=502, detail=f"Anthropic API authentication failed: {str(e)}")
+    except anthropic.APIConnectionError as e:
+        raise HTTPException(status_code=502, detail=f"Cannot reach Anthropic API: {str(e)}")
+    except anthropic.APIStatusError as e:
+        raise HTTPException(status_code=502, detail=f"Anthropic API error ({e.status_code}): {e.message}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to generate query: {type(e).__name__}: {str(e)}")
+
+
+def _validate_or_400(raw_sql: str) -> str:
+    """_validate_sql with any unexpected failure mapped to a generic 400."""
+    try:
+        return _validate_sql(raw_sql)
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="Generated SQL could not be validated.")
+
+
+def _run_select(db: Session, safe_sql: str) -> tuple[list[str], list[list]]:
+    """Execute validated SQL read-only and return (columns, rows).
+
+    Rolls back in all cases; nothing is ever committed.  Exceptions from the
+    driver propagate to the caller.
+    """
+    try:
+        result = db.execute(text(safe_sql))
+        columns = list(result.keys())
+        rows = [list(row) for row in result.fetchall()]
+
+        # Convert non-serialisable types to strings
+        for i, row in enumerate(rows):
+            for j, val in enumerate(row):
+                if hasattr(val, "isoformat"):
+                    rows[i][j] = val.isoformat()
+                elif isinstance(val, (bytes, bytearray)):
+                    rows[i][j] = val.decode("utf-8", errors="replace")
+                elif val is not None and not isinstance(val, (str, int, float, bool)):
+                    rows[i][j] = str(val)
+        return columns, rows
+    finally:
+        db.rollback()  # never commit SQL side effects
+
+
+def _is_order_by_not_in_distinct_error(exc: Exception) -> bool:
+    """True if exc wraps MySQL error 3065 (driver error number in orig.args[0])."""
+    args = getattr(getattr(exc, "orig", None), "args", None)
+    return bool(args) and args[0] == _MYSQL_ERR_ORDER_BY_NOT_IN_DISTINCT_SELECT
 
 
 def _check_quota(db: Session, user_id: int) -> None:
@@ -354,47 +433,29 @@ def natural_language_query(
     _check_quota(db, admin.user_id)
 
     # Step 2 — Generate SQL from the question
-    try:
-        raw_sql = _generate_sql(question)
-    except HTTPException:
-        raise
-    except anthropic.AuthenticationError as e:
-        raise HTTPException(status_code=502, detail=f"Anthropic API authentication failed: {str(e)}")
-    except anthropic.APIConnectionError as e:
-        raise HTTPException(status_code=502, detail=f"Cannot reach Anthropic API: {str(e)}")
-    except anthropic.APIStatusError as e:
-        raise HTTPException(status_code=502, detail=f"Anthropic API error ({e.status_code}): {e.message}")
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Failed to generate query: {type(e).__name__}: {str(e)}")
+    raw_sql = _generate_sql_or_http_error(question)
 
     # Step 3 — Validate the generated SQL
+    safe_sql = _validate_or_400(raw_sql)
+
+    # Step 4 — Execute read-only (rolled back inside _run_select).  A statement that
+    # passes validation can still be rejected by MySQL with error 3065 (DISTINCT with
+    # ORDER BY on unselected columns; BR-0011).  Only that error gets ONE regeneration;
+    # the replacement goes through Steps 3-4 in full, so every statement that reaches
+    # db.execute has passed _validate_sql().  The retry is not a loop and does not
+    # touch the quota: usage is incremented once, in Step 5, on success only.
     try:
-        safe_sql = _validate_sql(raw_sql)
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=400, detail="Generated SQL could not be validated.")
-
-    # Step 4 — Execute read-only; rollback resets transaction state without committing anything
-    try:
-        result = db.execute(text(safe_sql))
-        columns = list(result.keys())
-        rows = [list(row) for row in result.fetchall()]
-
-        # Convert non-serialisable types to strings
-        for i, row in enumerate(rows):
-            for j, val in enumerate(row):
-                if hasattr(val, "isoformat"):
-                    rows[i][j] = val.isoformat()
-                elif isinstance(val, (bytes, bytearray)):
-                    rows[i][j] = val.decode("utf-8", errors="replace")
-                elif val is not None and not isinstance(val, (str, int, float, bool)):
-                    rows[i][j] = str(val)
-
+        columns, rows = _run_select(db, safe_sql)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Query execution failed: {str(e)}")
-    finally:
-        db.rollback()  # never commit SQL side effects
+        if not _is_order_by_not_in_distinct_error(e):
+            raise HTTPException(status_code=400, detail=f"Query execution failed: {str(e)}")
+        logger.info("NL Query: MySQL 3065 on first attempt; regenerating once (admin %s)", admin.user_id)
+        raw_sql = _generate_sql_or_http_error(question, failed_sql=safe_sql)
+        safe_sql = _validate_or_400(raw_sql)
+        try:
+            columns, rows = _run_select(db, safe_sql)
+        except Exception as e2:
+            raise HTTPException(status_code=400, detail=f"Query execution failed: {str(e2)}")
 
     # Step 5 — Record quota usage and audit log (after successful execution and rollback)
     _increment_quota(db, admin.user_id)
