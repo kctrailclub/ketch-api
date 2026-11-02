@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     smtp_user: str | None = None
     smtp_password: str | None = None
 
+    # Non-production email guard (BL-0038 / RSK-0007). When ENVIRONMENT is anything other
+    # than "production", every outbound email is delivered ONLY to this single address, with
+    # the intended recipient in the subject. If unset (or invalid) outside production, no
+    # email is sent at all. Ignored in production. Env: EMAIL_REDIRECT_TO.
+    email_redirect_to: str | None = None
+
     # App
     app_name: str = "KCTC Volunteer Hours"
     frontend_url: str
