@@ -12,7 +12,48 @@ from app.core.config import settings
 log = logging.getLogger(__name__)
 
 
+class EmailBlockedError(RuntimeError):
+    """Raised when a non-production environment has no valid redirect address.
+
+    Fail closed: nothing is sent to anyone. Callers already treat any exception from
+    _send as a failed send (log, 502, or 'not sent' status), so this is reported
+    truthfully instead of being recorded as delivered.
+    """
+
+
+def _is_production() -> bool:
+    # Only the exact value "production" (case/whitespace-insensitive) counts as production.
+    # Any other value, including typos, is treated as non-production and is guarded.
+    return (settings.environment or "").strip().lower() == "production"
+
+
+def _valid_redirect(addr: str | None) -> str | None:
+    """Return a single plausible address, or None. Rejects lists and header-injection characters."""
+    addr = (addr or "").strip()
+    if not addr or any(c in addr for c in ",;<>\r\n \t") or addr.count("@") != 1:
+        return None
+    local, _, domain = addr.partition("@")
+    return addr if local and "." in domain else None
+
+
 def _send(to: str, subject: str, html: str) -> None:
+    if not _is_production():
+        redirect = _valid_redirect(settings.email_redirect_to)
+        if redirect is None:
+            # Never log the body (it carries password-reset and invite links).
+            log.error(
+                "EMAIL BLOCKED: environment=%r is not production and EMAIL_REDIRECT_TO is "
+                "unset or invalid; nothing was sent (intended to=%s)",
+                settings.environment, to,
+            )
+            raise EmailBlockedError(
+                "Email blocked: non-production environment without a valid EMAIL_REDIRECT_TO"
+            )
+        safe_to = " ".join(str(to).split())
+        safe_subject = " ".join(str(subject).split())
+        subject = f"[{(settings.environment or '').strip().upper()} \u2192 {safe_to}] {safe_subject}"
+        to = redirect
+
     providers = []
     if settings.zeptomail_token:
         providers.append(("ZeptoMail", _send_zeptomail))
