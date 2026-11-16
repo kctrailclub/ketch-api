@@ -204,3 +204,53 @@ class TestPrompt:
         captured.clear()
         nl_query._generate_sql("q")
         assert "rejected by MySQL" not in captured["messages"][0]["content"]
+
+
+# --- EP-0054: the retry must leave a marker that survives an unconfigured logger ---
+
+def _nl_records(caplog):
+    return [r for r in caplog.records if r.name == nl_query.logger.name]
+
+
+def test_retry_success_logs_start_and_outcome_at_warning(harness, caplog):
+    client, _, _ = harness([BAD, GOOD], {_norm(BAD): _mysql_error(3065)})
+    with caplog.at_level("WARNING", logger=nl_query.logger.name):
+        assert _post(client).status_code == 200
+    recs = _nl_records(caplog)
+    assert [r.levelname for r in recs] == ["WARNING", "WARNING"]
+    msgs = [r.getMessage() for r in recs]
+    assert "regenerating once" in msgs[0] and "3065" in msgs[0]
+    assert "3065 retry succeeded" in msgs[1]
+
+
+def test_retry_failure_logs_outcome(harness, caplog):
+    client, _, _ = harness([BAD, BAD], {_norm(BAD): _mysql_error(3065)})
+    with caplog.at_level("WARNING", logger=nl_query.logger.name):
+        assert _post(client).status_code == 400
+    msgs = [r.getMessage() for r in _nl_records(caplog)]
+    assert len(msgs) == 2
+    assert "regenerating once" in msgs[0]
+    assert "3065 retry failed at execution" in msgs[1]
+
+
+def test_retry_log_lines_carry_no_sql_question_or_driver_text(harness, caplog):
+    client, _, _ = harness([BAD, BAD], {_norm(BAD): _mysql_error(3065)})
+    with caplog.at_level("DEBUG"):
+        _post(client)
+    text_out = "\n".join(r.getMessage() + str(r.args) for r in _nl_records(caplog))
+    for forbidden in ("SELECT", "DISTINCT", "Member contact list", "driver message"):
+        assert forbidden not in text_out
+
+
+def test_no_marker_without_a_3065(harness, caplog):
+    client, _, _ = harness([GOOD], {})
+    with caplog.at_level("DEBUG"):
+        assert _post(client).status_code == 200
+    assert _nl_records(caplog) == []
+
+
+def test_non_3065_error_logs_no_marker(harness, caplog):
+    client, _, _ = harness([BAD], {_norm(BAD): _mysql_error(1064)})
+    with caplog.at_level("DEBUG"):
+        assert _post(client).status_code == 400
+    assert _nl_records(caplog) == []

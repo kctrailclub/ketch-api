@@ -449,13 +449,20 @@ def natural_language_query(
     except Exception as e:
         if not _is_order_by_not_in_distinct_error(e):
             raise HTTPException(status_code=400, detail=f"Query execution failed: {str(e)}")
-        logger.info("NL Query: MySQL 3065 on first attempt; regenerating once (admin %s)", admin.user_id)
+        # WARNING, not INFO: the app configures no logging, so under uvicorn only
+        # WARNING+ from this logger reaches the platform log (EP-0054).  Fixed text and
+        # the admin id only: no SQL, question, or driver message.  A "regenerating once"
+        # line with no outcome line after it means the retry failed before execution
+        # (generation or validation raised an HTTP error).
+        logger.warning("NL Query: MySQL 3065 on first attempt; regenerating once (admin %s)", admin.user_id)
         raw_sql = _generate_sql_or_http_error(question, failed_sql=safe_sql)
         safe_sql = _validate_or_400(raw_sql)
         try:
             columns, rows = _run_select(db, safe_sql)
         except Exception as e2:
+            logger.warning("NL Query: 3065 retry failed at execution (admin %s)", admin.user_id)
             raise HTTPException(status_code=400, detail=f"Query execution failed: {str(e2)}")
+        logger.warning("NL Query: 3065 retry succeeded (admin %s)", admin.user_id)
 
     # Step 5 — Record quota usage and audit log (after successful execution and rollback)
     _increment_quota(db, admin.user_id)
