@@ -263,7 +263,6 @@ class TrailCompletion(Base):
     trail         = relationship("StravaTrail", foreign_keys=[trail_id], back_populates="completions")
 
 
-
 class ResourceSponsor(Base):
     __tablename__ = "resource_sponsors"
 
